@@ -1,0 +1,572 @@
+---
+title: "Actividad 3. Griegas y estrategias de opciones - AAPL"
+subtitle: "Covered Call | Collar | Bear Put Spread | Bear Call Spread | Long Strangle"
+author: "Equipo 3: Brenda May [MATRICULA REDACTADA] | Franco Flores [MATRICULA REDACTADA] | Paul Armenta [MATRICULA REDACTADA]"
+date: "14 de octubre de 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+    df_print: default
+---
+
+<style>
+.main-container { max-width: 1250px; }
+table { display: block; max-width: 100%; overflow-x: auto; font-size: 13px; }
+</style>
+
+# Introducción y alcance: Apple Inc. (AAPL)
+
+Se replican las **mismas cinco estrategias** del análisis de GLW (Covered Call, Collar, Bear Put Spread, Bear Call Spread y Long Strangle), ahora sobre **Apple Inc. (AAPL)**, con el **mismo vencimiento (16 de octubre de 2026)** para que ambos subyacentes sean comparables. Las cotizaciones (Last, Bid, Ask, volumen y open interest) provienen del simulador de **Investopedia** (cierre del 9 de octubre de 2026) y las griegas de **TradingView** (cadena de opciones) se usan sólo como referencia comparativa. Cada estrategia se evalúa por separado; las 100 acciones no se suman varias veces.
+
+**Criterio de selección de strikes.** Como AAPL es menos volátil que GLW (IV de 21-25% vs. más de 50% en GLW), los strikes se eligieron más cerca del dinero (entre -3.5% y +7% del spot) y se priorizaron los contratos con volumen y open interest elevados entre los contratos seleccionados. Estos datos apoyan la selección, pero no prueban que sean los más líquidos de toda la cadena ni garantizan ejecución.
+
+```{r aapl-configuracion, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE,
+                      fig.width = 9, fig.height = 5, fig.align = "center")
+options(scipen = 999, digits = 7)
+```
+
+
+## Convenciones y alcance del modelo
+
+La fecha de valuación es el **9 de octubre de 2026**, con **7 días naturales** hasta el 16 de octubre. El spot y las primas son datos históricos transcritos del material adjunto, no cotizaciones actuales. La tasa de 4% es un supuesto académico. Black-Scholes-Merton se usa como aproximación de opciones europeas; no modela el ejercicio anticipado de las opciones americanas sobre acciones ni los dividendos discretos.
+
+La IV se calibra al **Last Price**: reconstruir ese precio comprueba la calibración, pero no constituye una validación independiente del mercado. Las griegas de TradingView son una referencia; una comparación estricta necesita sincronizar fecha, hora, spot, prima utilizada, plazo, tasa, dividendos y convenciones de unidades.
+
+**Unidades por posición completa:** Delta representa USD de cambio del valor por +1 USD en el subyacente, equivalente a acciones; Gamma es el cambio de Delta por +1 USD; Theta se expresa en USD por día natural; Vega y Rho, en USD por +1 punto porcentual de IV y de tasa. Las griegas son derivadas locales con los demás factores constantes. La Vega neta supone un desplazamiento paralelo de la IV de las patas, sin recalibrarla al mover el spot.
+
+Los resultados al vencimiento son **P/L neto de primas**, respecto del spot inicial para las acciones. Los límites de precio son strikes, no límites de ganancia en USD. Comprar al Ask y vender al Bid produce un escenario de costos basado en esas cotizaciones; no garantiza ejecución. Las cinco estrategias son alternativas independientes.
+
+## Parámetros generales (AAPL)
+
+```{r aapl-parametros}
+a_fecha_valuacion   <- as.Date("2026-10-09")   # Último cierre disponible (viernes)
+a_fecha_vencimiento <- as.Date("2026-10-16")
+a_S0 <- 336.64          # USD/acción: cierre del 9-oct-2026 (Investopedia y TradingView)
+a_r  <- 0.04            # 4% anual: SUPUESTO (igual que en GLW)
+a_q  <- 0.0032          # 0.32% dividend yield (Investopedia)
+a_T  <- as.numeric(a_fecha_vencimiento - a_fecha_valuacion) / 365
+a_mult <- 100L          # Acciones por contrato estándar
+stopifnot(a_T > 0, a_S0 > 0)
+
+knitr::kable(data.frame(
+  Parametro = c("Subyacente", "Precio de AAPL (USD)", "Fecha de valuación",
+                "Fecha de vencimiento", "Días naturales al vencimiento",
+                "T (años, ACT/365)", "Tasa r (supuesto anual)",
+                "Dividend yield q", "Multiplicador"),
+  Valor = c("AAPL", sprintf("%.2f", a_S0), as.character(a_fecha_valuacion),
+            as.character(a_fecha_vencimiento), round(a_T * 365),
+            sprintf("%.6f", a_T), sprintf("%.2f%%", 100 * a_r),
+            sprintf("%.2f%%", 100 * a_q), a_mult)),
+  caption = "Supuestos base de valuación - AAPL")
+```
+
+## Cotizaciones observadas de las cinco opciones (AAPL, vencimiento 16-oct-2026)
+
+```{r aapl-cotizaciones}
+# Last, Bid, Ask, Volumen y Open Interest: Investopedia (cierre 9-oct-2026).
+# Griegas *_tv: referencia transcrita; fecha/hora y plazo de TradingView por confirmar.
+a_opciones <- data.frame(
+  codigo   = c("C345", "C350", "C360", "P325", "P335"),
+  simbolo  = c("AAPL2616J345", "AAPL2616J350", "AAPL2616J360",
+               "AAPL2616V325", "AAPL2616V335"),
+  tipo     = c("call", "call", "call", "put", "put"),
+  strike   = c(345, 350, 360, 325, 335),
+  last     = c(1.21, 0.52, 0.09, 0.78, 3.30),
+  bid      = c(1.19, 0.50, 0.08, 0.66, 3.15),
+  ask      = c(1.35, 0.57, 0.12, 0.80, 3.35),
+  volumen  = c(13759, 16274, 3794, 9148, 8375),
+  oi       = c(28158, 34871, 52080, 9555, 14079),
+  iv_tv    = c(23.03, 23.32, 24.54, 22.42, 20.72),
+  delta_tv = c(0.21, 0.11, 0.02, -0.13, -0.45),
+  gamma_tv = c(0.027, 0.017, 0.005, 0.021, 0.042),
+  theta_tv = c(-0.22, -0.14, -0.04, -0.16, -0.27),
+  vega_tv  = c(0.13, 0.08, 0.02, 0.10, 0.18),
+  rho_tv   = c(0.01, 0.01, 0.00, -0.01, -0.03),
+  stringsAsFactors = FALSE
+)
+a_opciones$moneyness_pct <- round(100 * (a_opciones$strike / a_S0 - 1), 2)
+knitr::kable(a_opciones[, c("codigo", "simbolo", "tipo", "strike", "moneyness_pct",
+                            "last", "bid", "ask", "volumen", "oi")],
+             digits = 2, col.names = c("Código", "Símbolo", "Tipo", "Strike",
+                                       "Distancia al spot (%)", "Last", "Bid",
+                                       "Ask", "Volumen", "Open Interest"),
+             caption = "Primas en USD por acción (x100 por contrato)")
+```
+
+## Black-Scholes-Merton, volatilidad implícita y griegas (AAPL)
+
+Se usa el mismo modelo que en GLW: $d_1 = \frac{\ln(S/K)+(r-q+\sigma^2/2)T}{\sigma\sqrt{T}}$, $d_2 = d_1-\sigma\sqrt{T}$, con $C = Se^{-qT}N(d_1)-Ke^{-rT}N(d_2)$ y $P = Ke^{-rT}N(-d_2)-Se^{-qT}N(-d_1)$. La volatilidad implícita se obtiene numéricamente igualando el precio teórico al **Last Price**; las griegas de TradingView **no** son insumo del cálculo.
+
+```{r aapl-black-scholes}
+a_bs_precio <- function(S, K, T, r, q, sigma, tipo) {
+  tipo <- match.arg(tipo, c("call", "put"))
+  if (T <= 0) return(if (tipo == "call") pmax(S - K, 0) else pmax(K - S, 0))
+  stopifnot(all(is.finite(c(S, K, T, r, q, sigma))), all(S > 0), K > 0, sigma > 0, T > 0)
+  d1 <- (log(S / K) + (r - q + 0.5 * sigma^2) * T) / (sigma * sqrt(T))
+  d2 <- d1 - sigma * sqrt(T)
+  if (tipo == "call") S * exp(-q * T) * pnorm(d1) - K * exp(-r * T) * pnorm(d2)
+  else K * exp(-r * T) * pnorm(-d2) - S * exp(-q * T) * pnorm(-d1)
+}
+
+a_iv <- function(precio, tipo, K, S, T, r, q) {
+  tipo <- match.arg(tipo, c("call", "put"))
+  stopifnot(all(is.finite(c(precio, K, S, T, r, q))), precio > 0, K > 0, S > 0, T > 0)
+  f <- function(s) a_bs_precio(S, K, T, r, q, s, tipo) - precio
+  if (f(0.0001) * f(5) > 0) stop("Prima incompatible con el rango de IV para ", tipo, " ", K)
+  uniroot(f, lower = 0.0001, upper = 5, tol = 1e-10)$root
+}
+
+# Unidades por acción: Theta por día natural; Vega y Rho por +1 punto porcentual
+a_bs_griegas <- function(S, K, T, r, q, sigma, tipo) {
+  stopifnot(all(is.finite(c(S, K, T, r, q, sigma))), all(S > 0), K > 0, sigma > 0, T > 0)
+  d1 <- (log(S / K) + (r - q + 0.5 * sigma^2) * T) / (sigma * sqrt(T))
+  d2 <- d1 - sigma * sqrt(T)
+  dq <- exp(-q * T); dr <- exp(-r * T)
+  delta <- if (tipo == "call") dq * pnorm(d1) else dq * (pnorm(d1) - 1)
+  gamma <- dq * dnorm(d1) / (S * sigma * sqrt(T))
+  vega  <- S * dq * dnorm(d1) * sqrt(T) / 100
+  th0   <- -S * dq * dnorm(d1) * sigma / (2 * sqrt(T))
+  if (tipo == "call") {
+    theta <- th0 - r * K * dr * pnorm(d2) + q * S * dq * pnorm(d1)
+    rho   <- K * T * dr * pnorm(d2) / 100
+  } else {
+    theta <- th0 + r * K * dr * pnorm(-d2) - q * S * dq * pnorm(-d1)
+    rho   <- -K * T * dr * pnorm(-d2) / 100
+  }
+  c(Delta = delta, Gamma = gamma, Theta = theta / 365, Vega = vega, Rho = rho)
+}
+
+a_opciones$iv <- vapply(seq_len(nrow(a_opciones)), function(i)
+  a_iv(a_opciones$last[i], a_opciones$tipo[i], a_opciones$strike[i],
+       a_S0, a_T, a_r, a_q), numeric(1))
+
+a_bsm <- t(vapply(seq_len(nrow(a_opciones)), function(i)
+  a_bs_griegas(a_S0, a_opciones$strike[i], a_T, a_r, a_q,
+               a_opciones$iv[i], a_opciones$tipo[i]), numeric(5)))
+rownames(a_bsm) <- a_opciones$codigo
+
+knitr::kable(data.frame(
+  Opcion = a_opciones$codigo,
+  IV_BS_pct = round(100 * a_opciones$iv, 2), IV_TV_pct = a_opciones$iv_tv,
+  Delta_BS = round(a_bsm[, "Delta"], 4), Delta_TV = a_opciones$delta_tv,
+  Gamma_BS = round(a_bsm[, "Gamma"], 4), Gamma_TV = a_opciones$gamma_tv,
+  Theta_BS = round(a_bsm[, "Theta"], 4), Theta_TV = a_opciones$theta_tv,
+  Vega_BS  = round(a_bsm[, "Vega"], 4),  Vega_TV  = a_opciones$vega_tv,
+  Rho_BS   = round(a_bsm[, "Rho"], 4),   Rho_TV   = a_opciones$rho_tv,
+  row.names = NULL),
+  caption = "Comparación: BSM (7 días naturales) y referencia transcrita de TradingView")
+```
+
+**Lectura de la comparación.** La IV BSM calibrada se encuentra entre **21.44% y 23.96%**; la referencia de TradingView, entre **20.72% y 24.54%**. Las diferencias BSM menos TradingView van de **-1.59 a +1.77 puntos porcentuales**. Por ejemplo, la Put 335 tiene Delta BSM **-0.4227**, frente a **-0.45**, y Gamma BSM **0.0373**, frente a **0.042**. Se conserva la referencia, pero no se afirma coincidencia a dos decimales ni se atribuyen todas las diferencias a un supuesto de 5 DTE que no está documentado en los adjuntos. La IV BSM de GLW es **52.80%-55.88%** en los contratos analizados.
+
+## Construcción de las cinco estrategias (AAPL)
+
+```{r aapl-funciones-estrategias}
+# Cantidad positiva = contrato comprado; negativa = contrato vendido.
+a_estrategias <- list(
+  covered = list(id = "covered", nombre = "Covered Call", acciones = 100L,
+    patas = c("C345" = -1L),
+    objetivo = "Cobrar prima vendiendo una Call 345 (2.5% OTM; 13,759 contratos operados y 28,158 de open interest) contra 100 acciones de AAPL.",
+    lectura = "Perspectiva neutral a moderadamente alcista: la prima de 1.21 USD amortigua una caída pequeña, pero la posición conserva casi todo el riesgo bajista de las acciones y cede la ganancia por arriba de 345."),
+  collar = list(id = "collar", nombre = "Collar", acciones = 100L,
+    patas = c("P325" = 1L, "C345" = -1L),
+    objetivo = "Proteger 100 acciones con una Put 325 comprada, financiada con la Call 345 vendida.",
+    lectura = "La prima de la Call (1.21) paga completamente la Put (0.78), por lo que el collar se arma con crédito neto. Fija protección con strike 325 y techo con strike 345; el P/L de las 100 acciones y las opciones queda entre -1,121 y +879 USD al vencimiento."),
+  bear_put = list(id = "bear_put", nombre = "Bear Put Spread", acciones = 0L,
+    patas = c("P335" = 1L, "P325" = -1L),
+    objetivo = "Beneficiarse de una baja de AAPL comprando la Put 335 (casi ATM) y abaratándola con la venta de la Put 325.",
+    lectura = "Operación de débito con pérdida máxima igual a la prima neta pagada y ganancia máxima limitada si AAPL termina en 325 o menos."),
+  bear_call = list(id = "bear_call", nombre = "Bear Call Spread", acciones = 0L,
+    patas = c("C350" = -1L, "C360" = 1L),
+    objetivo = "Cobrar prima apostando a que AAPL no supere 350 al vencimiento; la Call 360 limita la pérdida.",
+    lectura = "Operación de crédito neutral/bajista: la Call 350 está OTM y tiene Delta BSM cercana a 0.107; Delta no es una probabilidad exacta de ganancia del spread. La pérdida potencial es mucho mayor que la prima cobrada si AAPL sube con fuerza."),
+  strangle = list(id = "strangle", nombre = "Long Strangle", acciones = 0L,
+    patas = c("P325" = 1L, "C350" = 1L),
+    objetivo = "Apostar por un movimiento fuerte de AAPL en cualquier dirección comprando una Put 325 y una Call 350.",
+    lectura = "Pierde las primas si AAPL termina entre 325 y 350; genera ganancia al vencimiento por debajo de 323.70 o por arriba de 351.30 USD: movimientos de aproximadamente -3.84% o +4.35% respecto del spot inicial, usando Last.")
+)
+
+a_filas <- function(e) {
+  i <- match(names(e$patas), a_opciones$codigo)
+  if (anyNA(i)) stop("Código de opción no encontrado")
+  a_opciones[i, , drop = FALSE]
+}
+
+a_primas <- function(e, modo) {
+  modo <- match.arg(modo, c("last", "bidask"))
+  f <- a_filas(e); qty <- unname(e$patas)
+  if (modo == "last") f$last else ifelse(qty > 0, f$ask, f$bid)
+}
+
+a_prima_neta <- function(e, modo = "last")    # Positivo = prima neta recibida
+  -a_mult * sum(unname(e$patas) * a_primas(e, modo))
+
+a_pnl_venc <- function(e, ST, modo = "last") {
+  f <- a_filas(e); qty <- unname(e$patas); p <- a_primas(e, modo)
+  res <- e$acciones * (ST - a_S0)
+  for (j in seq_len(nrow(f))) {
+    intr <- if (f$tipo[j] == "call") pmax(ST - f$strike[j], 0) else pmax(f$strike[j] - ST, 0)
+    res <- res + a_mult * qty[j] * (intr - p[j])
+  }
+  res
+}
+
+a_pnl_modelo <- function(e, S) {
+  f <- a_filas(e); qty <- unname(e$patas)
+  res <- e$acciones * (S - a_S0)
+  for (j in seq_len(nrow(f)))
+    res <- res + a_mult * qty[j] *
+      (a_bs_precio(S, f$strike[j], a_T, a_r, a_q, f$iv[j], f$tipo[j]) - f$last[j])
+  res
+}
+
+a_griega_neta <- function(e) {
+  g <- c(Delta = as.numeric(e$acciones), Gamma = 0, Theta = 0, Vega = 0, Rho = 0)
+  for (j in seq_along(e$patas))
+    g <- g + a_mult * unname(e$patas[j]) * a_bsm[names(e$patas)[j], ]
+  g
+}
+
+# Las métricas derivan de los strikes y del multiplicador de las posiciones definidas.
+a_metricas <- function(e) {
+  f <- a_filas(e); qty <- unname(e$patas)
+  cr <- a_prima_neta(e) / a_mult                       # crédito(+)/débito(-) por acción
+  Kc <- function(tipo, signo) f$strike[f$tipo == tipo & sign(qty) == signo]
+  switch(e$id,
+    covered = { K <- Kc("call", -1)
+      c(max = a_mult * (K - a_S0 + cr), perdida = a_mult * (a_S0 - cr),
+        be1 = a_S0 - cr, be2 = NA) },
+    collar = { Kp <- Kc("put", 1); Kk <- Kc("call", -1)
+      c(max = a_mult * (Kk - a_S0 + cr), perdida = a_mult * (a_S0 - Kp - cr),
+        be1 = a_S0 - cr, be2 = NA) },
+    bear_put = { Ka <- Kc("put", 1); Kb <- Kc("put", -1)
+      c(max = a_mult * (Ka - Kb + cr), perdida = -a_mult * cr, be1 = Ka + cr, be2 = NA) },
+    bear_call = { Kb <- Kc("call", -1); Ka <- Kc("call", 1)
+      c(max = a_mult * cr, perdida = a_mult * (Ka - Kb - cr), be1 = Kb + cr, be2 = NA) },
+    strangle = { Kp <- Kc("put", 1); Kk <- Kc("call", 1)
+      c(max = Inf, perdida = -a_mult * cr, be1 = Kp + cr, be2 = Kk - cr) })
+}
+
+a_usd <- function(v) if (is.infinite(v)) "Sin límite al alza" else
+  sprintf("%s%.2f USD", ifelse(v < 0, "-", ""), abs(v))
+
+a_mostrar_datos <- function(e) {
+  f <- a_filas(e); qty <- unname(e$patas)
+  tabla <- data.frame(Instrumento = f$simbolo,
+    Operacion = ifelse(qty > 0, "Buy to Open", "Sell to Open (teórico)"),
+    Cantidad = abs(qty), Strike = f$strike, Last = f$last, Bid = f$bid,
+    Ask = f$ask, Volumen = f$volumen, OI = f$oi, IV_pct = round(100 * f$iv, 2))
+  if (e$acciones > 0)
+    tabla <- rbind(data.frame(Instrumento = "Acciones AAPL", Operacion = "Compra",
+      Cantidad = e$acciones, Strike = NA, Last = a_S0, Bid = NA, Ask = NA,
+      Volumen = NA, OI = NA, IV_pct = NA), tabla)
+  cat("**Objetivo:** ", e$objetivo, "\n\n", sep = "")
+  cat(knitr::kable(tabla, format = "html", digits = 2), "\n\n")
+  cat("**Prima neta de opciones (Last):** ", a_usd(a_prima_neta(e, "last")),
+      " (positivo = cobro; negativo = desembolso).\n\n", sep = "")
+  cat("**Prima neta con Bid/Ask (escenario de cotizaciones):** ", a_usd(a_prima_neta(e, "bidask")), "\n\n", sep = "")
+
+  piezas <- list()
+  if (e$acciones != 0) piezas[[1]] <- data.frame(Instrumento = "100 acciones",
+    Delta = e$acciones, Gamma = 0, Theta = 0, Vega = 0, Rho = 0)
+  for (j in seq_along(e$patas)) {
+    v <- qty[j] * a_mult * a_bsm[names(e$patas)[j], ]
+    piezas[[length(piezas) + 1]] <- data.frame(
+      Instrumento = paste(ifelse(qty[j] > 0, "+", "-"), names(e$patas)[j]),
+      Delta = v[["Delta"]], Gamma = v[["Gamma"]], Theta = v[["Theta"]],
+      Vega = v[["Vega"]], Rho = v[["Rho"]])
+  }
+  g <- a_griega_neta(e)
+  tg <- rbind(do.call(rbind, piezas), data.frame(Instrumento = "TOTAL ESTRATEGIA",
+    Delta = g[["Delta"]], Gamma = g[["Gamma"]], Theta = g[["Theta"]],
+    Vega = g[["Vega"]], Rho = g[["Rho"]]))
+  cat("**Griegas de la estrategia (por posición completa; unidades descritas arriba):**\n\n")
+  cat(knitr::kable(tg, format = "html", digits = 4), "\n\n")
+
+  m <- a_metricas(e)
+  cat("**Métricas de riesgo al vencimiento (primas Last):**\n\n")
+  cat(knitr::kable(data.frame(
+    Indicador = c("Ganancia máxima", "Pérdida máxima", "Breakeven inferior o único",
+                  "Breakeven superior"),
+    Resultado = c(a_usd(m[["max"]]), a_usd(m[["perdida"]]),
+                  sprintf("%.2f USD/acción", m[["be1"]]),
+                  ifelse(is.na(m[["be2"]]), "No aplica",
+                         sprintf("%.2f USD/acción", m[["be2"]])))),
+    format = "html"), "\n\n")
+}
+
+a_grafica <- function(e) {
+  x <- seq(300, 375, by = 0.25)
+  y1 <- a_pnl_venc(e, x); y2 <- a_pnl_modelo(e, x)
+  op <- par(no.readonly = TRUE)
+  on.exit({ layout(1); par(op) }, add = TRUE)
+  layout(matrix(c(1, 2), ncol = 1), heights = c(4, 1))
+  par(mar = c(4.6, 5, 3.2, 1.4))
+  plot(x, y1, type = "n", ylim = range(c(y1, y2)),
+       xlab = "Precio final/hipotético de AAPL (USD)", ylab = "Ganancia o pérdida (USD)",
+       main = paste("P/L AAPL:", e$nombre))
+  grid(col = "#e0e0e0"); abline(h = 0, col = "#555555"); abline(v = a_S0, lty = 3, col = "#888888")
+  lines(x, y1, col = "#135b76", lwd = 2.7)
+  lines(x, y2, col = "#da7b28", lwd = 2, lty = 2)
+  par(mar = c(0, 0, 0, 0)); plot.new()
+  legend("center", bty = "n", cex = 0.85,
+         legend = c("P/L al vencimiento (Last)", "P/L teórico BS (7 días restantes)", "Spot de referencia (09-oct-2026)"),
+         col = c("#135b76", "#da7b28", "#888888"), lty = c(1, 2, 3), lwd = c(2.7, 2, 1))
+}
+
+a_escenarios <- function(e) {
+  s <- c(310, 320, 325, 330, a_S0, 340, 345, 350, 360, 370)
+  cat(knitr::kable(data.frame(Precio_AAPL_vencimiento = s,
+    PnL_Last_USD = round(a_pnl_venc(e, s, "last"), 2),
+    PnL_BidAsk_USD = round(a_pnl_venc(e, s, "bidask"), 2)),
+    format = "html", digits = 2), "\n\n")
+}
+
+a_interpretacion <- function(e) {
+  g <- a_griega_neta(e)
+  sg <- function(x) if (x > 1e-5) "positiva" else if (x < -1e-5) "negativa" else "cercana a cero"
+  cat("**Interpretación financiera.** ", e$lectura, "\n\n", sep = "")
+  if (e$id == "strangle") cat("La ganancia potencial es ilimitada al alza; a la baja está limitada porque el precio de la acción no puede ser menor que cero. Un aumento de IV antes del vencimiento puede ayudar, sin garantizar que el P/L sea positivo.\n\n")
+  cat(sprintf("- **Delta neta = %.2f:** cambio aproximado del P/L ante +1 USD en AAPL (equivale a %.0f acciones).\n", g[["Delta"]], g[["Delta"]]))
+  cat(sprintf("- **Gamma neta = %.4f:** curvatura %s; cambio de la Delta por cada USD que se mueve AAPL.\n", g[["Gamma"]], sg(g[["Gamma"]])))
+  cat(sprintf("- **Theta neta = %.2f USD/día:** el paso del tiempo %s a la posición.\n", g[["Theta"]], ifelse(g[["Theta"]] > 0, "favorece", "perjudica")))
+  cat(sprintf("- **Vega neta = %.2f USD por +1 pp de IV:** exposición %s a la volatilidad.\n", g[["Vega"]], sg(g[["Vega"]])))
+  cat(sprintf("- **Rho neta = %.2f USD por +1 pp de tasa:** exposición %s (marginal a 7 días).\n\n", g[["Rho"]], sg(g[["Rho"]])))
+}
+```
+
+## Estrategia 1 (AAPL): Covered Call
+
+```{r aapl-covered-datos, results='asis'}
+a_mostrar_datos(a_estrategias$covered)
+```
+
+```{r aapl-covered-grafica, fig.cap='Covered Call AAPL: 100 acciones + Call 345 vendida.'}
+a_grafica(a_estrategias$covered)
+```
+
+```{r aapl-covered-esc, results='asis'}
+a_escenarios(a_estrategias$covered)
+a_interpretacion(a_estrategias$covered)
+```
+
+## Estrategia 2 (AAPL): Collar
+
+```{r aapl-collar-datos, results='asis'}
+a_mostrar_datos(a_estrategias$collar)
+```
+
+```{r aapl-collar-grafica, fig.cap='Collar AAPL: Put 325 comprada y Call 345 vendida sobre 100 acciones.'}
+a_grafica(a_estrategias$collar)
+```
+
+```{r aapl-collar-esc, results='asis'}
+a_escenarios(a_estrategias$collar)
+a_interpretacion(a_estrategias$collar)
+```
+
+## Estrategia 3 (AAPL): Bear Put Spread
+
+```{r aapl-bearput-datos, results='asis'}
+a_mostrar_datos(a_estrategias$bear_put)
+```
+
+```{r aapl-bearput-grafica, fig.cap='Bear Put Spread AAPL: Put 335 comprada y Put 325 vendida.'}
+a_grafica(a_estrategias$bear_put)
+```
+
+```{r aapl-bearput-esc, results='asis'}
+a_escenarios(a_estrategias$bear_put)
+a_interpretacion(a_estrategias$bear_put)
+```
+
+## Estrategia 4 (AAPL): Bear Call Spread
+
+```{r aapl-bearcall-datos, results='asis'}
+a_mostrar_datos(a_estrategias$bear_call)
+```
+
+```{r aapl-bearcall-grafica, fig.cap='Bear Call Spread AAPL: Call 350 vendida y Call 360 comprada.'}
+a_grafica(a_estrategias$bear_call)
+```
+
+```{r aapl-bearcall-esc, results='asis'}
+a_escenarios(a_estrategias$bear_call)
+a_interpretacion(a_estrategias$bear_call)
+```
+
+## Estrategia 5 (AAPL): Long Strangle
+
+```{r aapl-strangle-datos, results='asis'}
+a_mostrar_datos(a_estrategias$strangle)
+```
+
+```{r aapl-strangle-grafica, fig.cap='Long Strangle AAPL: Put 325 y Call 350 compradas.'}
+a_grafica(a_estrategias$strangle)
+```
+
+```{r aapl-strangle-esc, results='asis'}
+a_escenarios(a_estrategias$strangle)
+a_interpretacion(a_estrategias$strangle)
+```
+
+## Comparación de las cinco estrategias (AAPL)
+
+```{r aapl-resumen}
+a_resumen <- do.call(rbind, lapply(a_estrategias, function(e) {
+  m <- a_metricas(e); g <- a_griega_neta(e)
+  data.frame(Estrategia = e$nombre, Acciones = e$acciones,
+    Prima_neta_USD = round(a_prima_neta(e), 2),
+    Ganancia_max_USD = ifelse(is.infinite(m[["max"]]), "Ilimitada", sprintf("%.2f", m[["max"]])),
+    Perdida_max_USD = round(m[["perdida"]], 2),
+    BE_inf = round(m[["be1"]], 2), BE_sup = round(m[["be2"]], 2),
+    Delta = round(g[["Delta"]], 2), Gamma = round(g[["Gamma"]], 4),
+    Theta_dia = round(g[["Theta"]], 2), Vega_1pp = round(g[["Vega"]], 2),
+    Rho_1pp = round(g[["Rho"]], 2), row.names = NULL)
+}))
+knitr::kable(a_resumen, caption = "AAPL: cinco alternativas independientes (primas Last)")
+```
+
+```{r aapl-comparacion-grafica, fig.height=6, fig.cap='AAPL: payoff de las cinco estrategias al vencimiento (no es un portafolio agregado).'}
+op_comparacion <- par(no.readonly = TRUE)
+layout(matrix(c(1, 2), ncol = 1), heights = c(5, 1))
+par(mar = c(4.6, 5, 3.2, 1.4))
+x <- seq(310, 365, by = 0.25)
+matplot(x, sapply(a_estrategias, a_pnl_venc, ST = x), type = "l", lty = 1, lwd = 2.4,
+        col = c("#135b76", "#3c8d65", "#b65055", "#8c67a9", "#cc8a2b"),
+        xlab = "AAPL al vencimiento (USD)", ylab = "Ganancia/pérdida (USD)",
+        main = "AAPL: comparación de P/L al vencimiento")
+abline(h = 0, lty = 2, col = "#666666"); abline(v = a_S0, lty = 3, col = "#888888")
+par(mar = c(0, 0, 0, 0)); plot.new()
+legend("center", ncol = 3, legend = vapply(a_estrategias, `[[`, character(1), "nombre"),
+       col = c("#135b76", "#3c8d65", "#b65055", "#8c67a9", "#cc8a2b"),
+       lty = 1, lwd = 2.4, bty = "n", cex = 0.82)
+layout(1); par(op_comparacion)
+```
+
+## Conclusiones AAPL y comparación con GLW
+
+1. **Covered Call:** cobra 121 USD y alcanza una ganancia máxima de 957 USD; mantiene una pérdida potencial de hasta 33,543 USD si la acción cae a cero. Delta neta: 78.46.
+2. **Collar:** cobra 43 USD netos en opciones. Con las 100 acciones, el P/L al vencimiento queda entre **-1,121 y +879 USD**. Los strikes son 325 y 345; no son importes de ganancia o pérdida. Con Bid/Ask, el crédito baja a 39 USD.
+3. **Bear Put Spread:** cuesta 252 USD y su ganancia máxima es 748 USD si AAPL termina en 325 o menos. El equilibrio está en **332.48 USD**. En el punto inicial, su Gamma **1.7790** y su Vega **8.07 USD/pp** también son positivas.
+4. **Bear Call Spread:** cobra 43 USD y arriesga hasta 957 USD; el equilibrio está en **350.43 USD**. La Delta de la Call vendida sirve como referencia de sensibilidad, sin demostrar una probabilidad exacta de éxito.
+5. **Long Strangle:** cuesta 130 USD, tiene Gamma **3.7566**, Vega **18.77 USD/pp** y Theta **-30.78 USD/día**. Sus equilibrios son **323.70 y 351.30 USD**, aproximadamente **-3.84% y +4.35%** desde el spot. La Gamma y la Vega positivas son mayores que las del Bear Put Spread en esta valuación.
+
+**AAPL frente a GLW.** La IV BSM de los contratos analizados es menor en AAPL (21.44%-23.96%) que en GLW (52.80%-55.88%). El débito del Long Strangle representa aproximadamente **0.39% del valor de 100 acciones de AAPL**, frente a **2.32% en GLW**, pero strikes, distancias al spot y dividendos difieren: no es una comparación con condiciones idénticas. El cambio desfavorable entre Last y Bid/Ask es de **2, 4, 17, 5 y 7 USD** para AAPL y de **12, 21, 23, 4 y 15 USD** para GLW, respectivamente. No es menor en AAPL para todas las estrategias.
+
+**Evidencias del simulador.** Las capturas de Investopedia muestran la cartera de 100 acciones y los formularios o vistas previas de los contratos utilizados. Sus cotizaciones, strikes y vencimiento respaldan los datos transcritos; las vistas previas no acreditan operaciones ejecutadas. La Put 325 aparece con dos contratos en el simulador, mientras que cada alternativa de este análisis usa un contrato por pata. El formulario de la Call 345 no permite abrir una venta corta: esa pata se modela de forma teórica. El costo de compra de 330 USD por acción de la cartera es distinto del spot de valuación de 336.64 USD; el análisis mide el P/L desde este último. Todas las opciones seleccionadas son OTM al 9 de octubre; la Put 335 está cerca de ATM, pero sigue siendo OTM.
+
+**Alcance:** las cinco estrategias son alternativas, no un portafolio consolidado. No se incluyen comisiones, deslizamiento, financiación, márgenes, asignación anticipada ni dividendos reales. Un resultado teórico o una cotización Bid/Ask no prueba que se haya ejecutado una operación.
+
+
+## Fuentes de la propuesta
+
+Investopedia aporta las cotizaciones históricas usadas en el cálculo del 9 de octubre de 2026. LSEG permite revisar la cadena de opciones, Bid/Ask, volumen, open interest, IV y Delta. Las consultas de LSEG y las configuraciones de OptionStrat se realizaron el 14 de octubre, conservando el vencimiento del 16 de octubre, un contrato por pata y 100 acciones en Covered Call y Collar. OptionStrat usa cotizaciones diferidas y primas de esa consulta, por lo que sus costos, equilibrios y griegas pueden diferir del cálculo histórico. Las capturas se usan para contrastar la estructura y el perfil del payoff, sin sustituir los datos del 9 de octubre.
+
+La comparación con TradingView conserva las griegas de referencia transcritas previamente. Las capturas de AAPL del 14 de octubre muestran las cinco griegas con dos días al vencimiento; corresponden a otra fecha y no verifican los valores históricos de esa transcripción.
+
+Las guías de MenthorQ respaldan la composición y el objetivo de las cinco estrategias. La cuenta consultada permite acceder a esas guías; los indicadores específicos de AAPL y GLW requieren Premium, por lo que no se incorporan señales GEX ni datos de posicionamiento de MenthorQ al cálculo.
+
+- **Covered Call:** combina 100 acciones y una call vendida; cobra prima y limita la ganancia al alza, conservando el riesgo de caída de las acciones. [MenthorQ](https://menthorq.com/guide/covered-call/).
+- **Collar:** añade una put comprada y una call vendida a las acciones, estableciendo un piso y un techo del P/L al vencimiento. [MenthorQ](https://menthorq.com/guide/collar/).
+- **Bear Put Spread:** compra la put de strike mayor y vende la de strike menor; expresa una expectativa bajista con pérdida y ganancia limitadas. [MenthorQ](https://menthorq.com/guide/bear-put-spread/).
+- **Bear Call Spread:** vende la call de strike menor y compra la de strike mayor; cobra un crédito y limita la pérdida ante una subida. [MenthorQ](https://menthorq.com/guide/bear-call-spread/).
+- **Long Strangle:** compra una put y una call de strikes distintos; necesita un movimiento suficiente para superar el costo de las primas. Su pérdida máxima es el débito. [MenthorQ](https://menthorq.com/guide/long-strangle-strategy/).
+
+Los signos de Gamma, Theta y Vega de los spreads dependen del spot, el plazo y la volatilidad; se interpretan con las griegas netas calculadas en este documento. La [lección de Gamma de CME](https://www.cmegroup.com/education/courses/option-greeks/options-gamma-the-greeks.html) explica la variación de Delta ante cambios del subyacente. Se usa como apoyo conceptual, ya que las opciones sobre AAPL y GLW de este análisis no son contratos de CME.
+
+La propuesta inicial de TecGPT se conserva en el [PDF de la conversación](TecGPT.pdf). La selección final de contratos y la interpretación cuantitativa se desarrollan en los dos análisis.
+
+### LSEG
+
+Cadena de AAPL con vencimiento del 16 de octubre de 2026, consultada el 14 de octubre.
+
+```{r aapl-lseg-calls, echo=FALSE, out.width="100%", fig.cap="LSEG: AAPL, calls, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/LSEG/AAPL_calls.jpg")
+```
+
+```{r aapl-lseg-puts, echo=FALSE, out.width="100%", fig.cap="LSEG: AAPL, puts, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/LSEG/AAPL_puts.jpg")
+```
+
+### TradingView
+
+Griegas de los cinco contratos de AAPL, consultadas el 14 de octubre de 2026.
+
+```{r aapl-tv-call_345, echo=FALSE, out.width="100%", fig.cap="TradingView: AAPL Call 345, vencimiento 16 de octubre; consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/TradingView/AAPL/Call_345.jpg")
+```
+
+```{r aapl-tv-call_350, echo=FALSE, out.width="100%", fig.cap="TradingView: AAPL Call 350, vencimiento 16 de octubre; consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/TradingView/AAPL/Call_350.jpg")
+```
+
+```{r aapl-tv-call_360, echo=FALSE, out.width="100%", fig.cap="TradingView: AAPL Call 360, vencimiento 16 de octubre; consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/TradingView/AAPL/Call_360.jpg")
+```
+
+```{r aapl-tv-put_325, echo=FALSE, out.width="100%", fig.cap="TradingView: AAPL Put 325, vencimiento 16 de octubre; consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/TradingView/AAPL/Put_325.jpg")
+```
+
+```{r aapl-tv-put_335, echo=FALSE, out.width="100%", fig.cap="TradingView: AAPL Put 335, vencimiento 16 de octubre; consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/TradingView/AAPL/Put_335.jpg")
+```
+
+### OptionStrat
+
+Configuraciones de AAPL con los strikes de la propuesta y vencimiento del 16 de octubre de 2026. Las primas corresponden a la consulta del 14 de octubre.
+
+```{r aapl-optionstrat-covered-call, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Covered Call de AAPL, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/AAPL/Covered_Call.jpg")
+```
+
+```{r aapl-optionstrat-collar, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Collar de AAPL, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/AAPL/Collar.jpg")
+```
+
+```{r aapl-optionstrat-bear-put-spread, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Bear Put Spread de AAPL, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/AAPL/Bear_Put_Spread.jpg")
+```
+
+```{r aapl-optionstrat-bear-call-spread, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Bear Call Spread de AAPL, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/AAPL/Bear_Call_Spread.jpg")
+```
+
+```{r aapl-optionstrat-long-strangle-strategy, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Long Strangle de AAPL, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/AAPL/Long_Strangle.jpg")
+```
+
+### MenthorQ
+
+Guías consultadas el 14 de octubre de 2026 para fundamentar la composición de cada estrategia.
+
+```{r aapl-menthor-covered-call, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Covered Call."}
+knitr::include_graphics("Capturas/MenthorQ/Covered_Call.jpg")
+```
+
+```{r aapl-menthor-collar, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Collar."}
+knitr::include_graphics("Capturas/MenthorQ/Collar.jpg")
+```
+
+```{r aapl-menthor-bear-put-spread, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Bear Put Spread."}
+knitr::include_graphics("Capturas/MenthorQ/Bear_Put_Spread.jpg")
+```
+
+```{r aapl-menthor-bear-call-spread, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Bear Call Spread."}
+knitr::include_graphics("Capturas/MenthorQ/Bear_Call_Spread.jpg")
+```
+
+```{r aapl-menthor-long-strangle-strategy, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Long Strangle."}
+knitr::include_graphics("Capturas/MenthorQ/Long_Strangle.jpg")
+```
+
+### CME
+
+```{r aapl-cme-gamma, echo=FALSE, out.width="100%", fig.cap="CME: Gamma y su relación con Delta."}
+knitr::include_graphics("Capturas/CME/Gamma.jpg")
+```

@@ -1,0 +1,746 @@
+---
+title: "Actividad 3. Griegas y estrategias de opciones - GLW"
+subtitle: "Covered Call | Collar | Bear Put Spread | Bear Call Spread | Long Strangle"
+author: "Equipo 3: Brenda May [MATRICULA REDACTADA] | Franco Flores [MATRICULA REDACTADA] | Paul Armenta [MATRICULA REDACTADA]"
+date: "14 de octubre de 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+    df_print: default
+---
+
+<style>
+.main-container { max-width: 1250px; }
+table { display: block; max-width: 100%; overflow-x: auto; font-size: 13px; }
+</style>
+
+```{r configuracion, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE,
+                      fig.width = 9, fig.height = 5, fig.align = "center")
+options(scipen = 999, digits = 7)
+```
+
+# Introducción y alcance
+
+Se evalúan **cinco estrategias alternativas** sobre **Corning Incorporated (GLW)**. Se utilizan posiciones y primas, procedentes de las capturas de TradingView e Investopedia. Cada estrategia se estudia por separado: las mismas 100 acciones ilustrativas no se suman varias veces a un portafolio conjunto.
+
+El análisis incluye las primas observadas, un modelo Black-Scholes con volatilidad implícita obtenida de esas primas, griegas por instrumento, griegas netas por estrategia, resultados al vencimiento, valor teórico antes del vencimiento y escenarios de pérdida y ganancia.
+
+
+## Convenciones y alcance del modelo
+
+La fecha de valuación es el **9 de octubre de 2026**, con **7 días naturales** hasta el 16 de octubre. El spot y las primas son datos históricos transcritos del material adjunto, no cotizaciones actuales. La tasa de 4% es un supuesto académico. Black-Scholes-Merton se usa como aproximación de opciones europeas; no modela el ejercicio anticipado de las opciones americanas sobre acciones ni los dividendos discretos.
+
+La IV se calibra al **Last Price**: reconstruir ese precio comprueba la calibración, pero no constituye una validación independiente del mercado. Las griegas de TradingView son una referencia; una comparación estricta necesita sincronizar fecha, hora, spot, prima utilizada, plazo, tasa, dividendos y convenciones de unidades.
+
+**Unidades por posición completa:** Delta representa USD de cambio del valor por +1 USD en el subyacente, equivalente a acciones; Gamma es el cambio de Delta por +1 USD; Theta se expresa en USD por día natural; Vega y Rho, en USD por +1 punto porcentual de IV y de tasa. Las griegas son derivadas locales con los demás factores constantes. La Vega neta supone un desplazamiento paralelo de la IV de las patas, sin recalibrarla al mover el spot.
+
+Los resultados al vencimiento son **P/L neto de primas**, respecto del spot inicial para las acciones. Los límites de precio son strikes, no límites de ganancia en USD. Comprar al Ask y vender al Bid produce un escenario de costos basado en esas cotizaciones; no garantiza ejecución. Las cinco estrategias son alternativas independientes.
+
+# Parámetros generales
+
+```{r parametros}
+# Fecha de último mercado disponible frente a capturas del domingo 11/10/2026.
+fecha_valuacion  <- as.Date("2026-10-09")
+fecha_vencimiento <- as.Date("2026-10-16")
+S0 <- 156.68                  # USD/acción: capturas del simulador y TradingView
+r  <- 0.04                    # 4% anual: SUPUESTO
+q  <- 0.00                    # 0% dividend yield para simplificación
+T  <- as.numeric(fecha_vencimiento - fecha_valuacion) / 365
+multiplicador <- 100L         # Acciones por contrato estándar
+stopifnot(T > 0, S0 > 0, r >= 0, q >= 0)
+
+parametros <- data.frame(
+  Parametro = c("Subyacente", "Precio de GLW (USD)", "Fecha de valuación",
+                "Fecha de vencimiento", "Días naturales al vencimiento",
+                "T (años, ACT/365)", "Tasa r (supuesto anual)",
+                "Dividend yield q (supuesto anual)", "Multiplicador"),
+  Valor = c("GLW", sprintf("%.2f", S0), as.character(fecha_valuacion),
+            as.character(fecha_vencimiento), as.integer(T * 365),
+            sprintf("%.6f", T), sprintf("%.2f%%", 100 * r),
+            sprintf("%.2f%%", 100 * q), multiplicador)
+)
+knitr::kable(parametros, caption = "Supuestos base de valuación")
+```
+
+# Cotizaciones observadas de las seis opciones
+
+```{r cotizaciones}
+# Datos transcritos de las capturas de TradingView e Investopedia.
+# Las griegas de TradingView se conservan sólo como REFERENCIA COMPARATIVA.
+# Volumen: leído de las capturas incorporadas al HTML adjunto.
+# Open Interest: sólo está documentado para C162.5 en el material recuperado.
+opciones <- data.frame(
+  codigo   = c("C162.5", "P150", "P155", "P145", "C165", "C175"),
+  tipo     = c("call", "put", "put", "put", "call", "call"),
+  strike   = c(162.5, 150, 155, 145, 165, 175),
+  last     = c(2.40, 1.92, 3.70, 0.88, 1.72, 0.45),
+  bid      = c(2.28, 1.82, 3.60, 0.80, 1.70, 0.33),
+  ask      = c(2.60, 2.01, 3.85, 0.89, 1.78, 0.47),
+  volumen  = c(305, 681, 248, 352, 941, 421),
+  oi       = c(432, NA, NA, NA, NA, NA),
+  delta_tv = c(0.32, -0.27, -0.44, -0.14, 0.25, 0.082),
+  gamma_tv = c(0.030, 0.029, 0.036, 0.020, 0.027, 0.012),
+  theta_tv = c(-0.31, -0.27, -0.32, -0.19, -0.28, -0.14),
+  vega_tv  = c(0.076, 0.071, 0.084, 0.048, 0.068, 0.032),
+  rho_tv   = c(0.0089, -0.0083, -0.0130, -0.0043, 0.0071, 0.0023),
+  stringsAsFactors = FALSE
+)
+knitr::kable(opciones[, c("codigo", "tipo", "strike", "last", "bid", "ask", "volumen", "oi")],
+             digits = 2, caption = "Primas en USD por acción (multiplicar por 100 por contrato)")
+```
+
+**Selección de contratos.** Con spot de 156.68 USD, los strikes de calls están aproximadamente 3.71%, 5.31% y 11.70% arriba del spot; los de puts, 1.07%, 4.26% y 7.45% abajo. Todos son OTM. Se conserva el vencimiento común del 16-oct-2026 para comparar las alternativas. El volumen observado va de 248 a 941 contratos: es actividad de mercado y no la cantidad de contratos de nuestra posición. No se afirma que sean los contratos de mayor liquidez de toda la cadena. Los valores faltantes de OI quedan como NA porque no aparecen en las evidencias recuperadas.
+
+# Modelo Black-Scholes y obtención de la volatilidad implícita
+
+Se usa Black-Scholes-Merton con dividendo continuo $q$. Para una opción sobre una acción, definimos:
+
+$$d_1 = \frac{\ln(S/K)+(r-q+\sigma^2/2)T}{\sigma\sqrt{T}}, \qquad
+  d_2 = d_1-\sigma\sqrt{T}.$$
+
+$$C = Se^{-qT}N(d_1)-Ke^{-rT}N(d_2), \qquad
+  P = Ke^{-rT}N(-d_2)-Se^{-qT}N(-d_1).$$
+
+La **volatilidad implícita** $\sigma$ se obtiene numéricamente, buscando el valor que hace que el precio Black-Scholes sea igual al **Last Price** de cada opción. Por tanto, **no** usamos las griegas de TradingView como entrada del cálculo.
+
+```{r funciones-black-scholes}
+bs_precio <- function(S, K, T, r, q, sigma, tipo) {
+  tipo <- match.arg(tipo, c("call", "put"))
+  if (T <= 0) {
+    if (tipo == "call") return(pmax(S - K, 0))
+    return(pmax(K - S, 0))
+  }
+  if (!all(is.finite(c(S, K, T, r, q, sigma))) || any(S <= 0) || K <= 0 || sigma <= 0)
+    stop("Se requieren S, K y sigma positivos.")
+  d1 <- (log(S / K) + (r - q + 0.5 * sigma^2) * T) / (sigma * sqrt(T))
+  d2 <- d1 - sigma * sqrt(T)
+  if (tipo == "call") {
+    S * exp(-q * T) * pnorm(d1) - K * exp(-r * T) * pnorm(d2)
+  } else {
+    K * exp(-r * T) * pnorm(-d2) - S * exp(-q * T) * pnorm(-d1)
+  }
+}
+
+volatilidad_implicita <- function(precio, tipo, K, S, T, r, q) {
+  tipo <- match.arg(tipo, c("call", "put"))
+  stopifnot(all(is.finite(c(precio, K, S, T, r, q))), precio > 0, K > 0, S > 0, T > 0)
+  funcion <- function(sigma) bs_precio(S, K, T, r, q, sigma, tipo) - precio
+  extremo_inf <- funcion(0.000001)
+  extremo_sup <- funcion(5.0)
+  if (extremo_inf * extremo_sup > 0)
+    stop(paste("Prima incompatible con el rango de IV para", tipo, K))
+  uniroot(funcion, lower = 0.000001, upper = 5.0,
+          tol = 0.00000001)$root
+}
+
+# UNIDADES POR ACCIÓN/OPCIÓN:
+# Delta: cambio del precio de la opción por USD 1 de S
+# Gamma: cambio de Delta por USD 1 de S
+# Theta: USD por día NATURAL
+# Vega: USD ante +1 punto porcentual de volatilidad (sigma + 0.01)
+# Rho: USD ante +1 punto porcentual en la tasa anual r (r + 0.01)
+bs_griegas <- function(S, K, T, r, q, sigma, tipo) {
+  tipo <- match.arg(tipo, c("call", "put"))
+  if (T <= 0 || sigma <= 0) stop("T y sigma deben ser positivos.")
+  d1 <- (log(S / K) + (r - q + 0.5 * sigma^2) * T) / (sigma * sqrt(T))
+  d2 <- d1 - sigma * sqrt(T)
+  descuento_div <- exp(-q * T)
+  descuento_rf  <- exp(-r * T)
+
+  delta <- if (tipo == "call") descuento_div * pnorm(d1) else
+    descuento_div * (pnorm(d1) - 1)
+  gamma <- descuento_div * dnorm(d1) / (S * sigma * sqrt(T))
+  vega  <- S * descuento_div * dnorm(d1) * sqrt(T) / 100
+
+  theta_comun <- -S * descuento_div * dnorm(d1) * sigma / (2 * sqrt(T))
+  if (tipo == "call") {
+    theta_anual <- theta_comun - r * K * descuento_rf * pnorm(d2) +
+      q * S * descuento_div * pnorm(d1)
+    rho <- K * T * descuento_rf * pnorm(d2) / 100
+  } else {
+    theta_anual <- theta_comun + r * K * descuento_rf * pnorm(-d2) -
+      q * S * descuento_div * pnorm(-d1)
+    rho <- -K * T * descuento_rf * pnorm(-d2) / 100
+  }
+  c(Delta = delta, Gamma = gamma, Theta = theta_anual / 365,
+    Vega = vega, Rho = rho)
+}
+
+opciones$iv <- vapply(seq_len(nrow(opciones)), function(i) {
+  volatilidad_implicita(opciones$last[i], opciones$tipo[i],
+                        opciones$strike[i], S0, T, r, q)
+}, numeric(1))
+
+bsm <- t(vapply(seq_len(nrow(opciones)), function(i) {
+  bs_griegas(S0, opciones$strike[i], T, r, q, opciones$iv[i], opciones$tipo[i])
+}, numeric(5)))
+rownames(bsm) <- opciones$codigo
+
+comparacion <- data.frame(
+  Opcion = opciones$codigo,
+  IV_estimada_pct = round(100 * opciones$iv, 2),
+  Delta_BS = round(bsm[, "Delta"], 4),
+  Delta_TV = opciones$delta_tv,
+  Gamma_BS = round(bsm[, "Gamma"], 4),
+  Gamma_TV = opciones$gamma_tv,
+  Theta_BS_dia = round(bsm[, "Theta"], 4),
+  Theta_TV = opciones$theta_tv,
+  Vega_BS_1pp = round(bsm[, "Vega"], 4),
+  Vega_TV = opciones$vega_tv,
+  Rho_BS_1pp = round(bsm[, "Rho"], 4),
+  Rho_TV = opciones$rho_tv,
+  row.names = NULL
+)
+knitr::kable(comparacion, caption = "Comparación de griegas BSM y referencia TradingView; IV calibrada al Last")
+```
+
+**Convenciones de las griegas:** Theta se mide por **día natural**, Vega por cambio de **1 punto porcentual** en la volatilidad (por ejemplo, de 53% a 54%) y Rho por cambio de **1 punto porcentual** en la tasa libre de riesgo. Para obtener las griegas de un contrato hay que multiplicarlas por 100 y por el signo de su posición (compra = +, venta = −). La acción directamente aporta **Delta = +100** cuando se tienen 100 acciones, y cero a las demás griegas dentro de este modelo simplificado.
+
+# Construcción de las cinco estrategias
+
+```{r funciones-estrategias}
+# Cada nombre en 'patas' corresponde a un codigo de la tabla de opciones.
+# Valor positivo: contrato comprado. Negativo: contrato vendido.
+estrategias <- list(
+  covered = list(
+    id = "covered", nombre = "Covered Call", acciones = 100L,
+    patas = c("C162.5" = -1L),
+    objetivo = "Cobrar una prima por vender una Call contra 100 acciones existentes, a cambio de limitar la ganancia alcista.",
+    lectura = "Adecuada ante una perspectiva neutral o moderadamente alcista. La prima amortigua una caída pequeña, pero la posición sigue expuesta a pérdidas fuertes en las acciones.",
+    imagenes = c("Capturas/TradingView/GLW/Call_162_50.png",
+                 "Capturas/Investopedia/GLW/Call_162_50_Formulario.png")
+  ),
+  collar = list(
+    id = "collar", nombre = "Collar", acciones = 100L,
+    patas = c("P150" = 1L, "C162.5" = -1L),
+    objetivo = "Proteger 100 acciones con una Put comprada y financiar parte de su costo vendiendo una Call.",
+    lectura = "Acota la pérdida potencial por debajo de la Put 150, pero también fija un techo de ganancias mediante la Call 162.50.",
+    imagenes = c("Capturas/TradingView/GLW/Put_150.png",
+                 "Capturas/TradingView/GLW/Call_162_50_2.png")
+  ),
+  bear_put = list(
+    id = "bear_put", nombre = "Bear Put Spread", acciones = 0L,
+    patas = c("P155" = 1L, "P145" = -1L),
+    objetivo = "Beneficiarse de una disminución de GLW mediante una Put comprada, reduciendo su costo con una Put vendida de menor strike.",
+    lectura = "Tiene un débito inicial y riesgo máximo limitado. La ganancia también está limitada y se maximiza en precios iguales o menores a 145.",
+    imagenes = c("Capturas/TradingView/GLW/Put_155.png",
+                 "Capturas/TradingView/GLW/Put_145.png")
+  ),
+  bear_call = list(
+    id = "bear_call", nombre = "Bear Call Spread", acciones = 0L,
+    patas = c("C165" = -1L, "C175" = 1L),
+    objetivo = "Cobrar una prima neta esperando que GLW permanezca debajo del strike de la Call vendida.",
+    lectura = "Es una operación de crédito de orientación neutral/bajista con ganancia limitada a la prima recibida y pérdida limitada por la Call 175 comprada.",
+    imagenes = c("Capturas/TradingView/GLW/Call_165.png",
+                 "Capturas/TradingView/GLW/Call_175.png")
+  ),
+  strangle = list(
+    id = "strangle", nombre = "Long Strangle", acciones = 0L,
+    patas = c("P150" = 1L, "C165" = 1L),
+    objetivo = "Apostar por un movimiento importante del subyacente en cualquier dirección mediante una Put y una Call compradas fuera del dinero.",
+    lectura = "Pierde las primas si GLW termina entre 150 y 165; requiere superar uno de los dos puntos de equilibrio para generar ganancia al vencimiento.",
+    imagenes = c("Capturas/TradingView/GLW/Put_150.png",
+                 "Capturas/TradingView/GLW/Call_165.png")
+  )
+)
+
+obtener_filas <- function(e) {
+  i <- match(names(e$patas), opciones$codigo)
+  if (anyNA(i)) stop("Código de opción no encontrado en la tabla.")
+  opciones[i, , drop = FALSE]
+}
+
+prima_neta_usd <- function(e, modo = "last") {
+  modo <- match.arg(modo, c("last", "bidask"))
+  filas <- obtener_filas(e)
+  cantidad <- unname(e$patas)
+  primas <- if (modo == "last") filas$last else
+    ifelse(cantidad > 0, filas$ask, filas$bid)
+  -multiplicador * sum(cantidad * primas) # Positivo = prima neta recibida
+}
+
+pnl_vencimiento <- function(e, ST, modo = "last") {
+  modo <- match.arg(modo, c("last", "bidask"))
+  resultado <- e$acciones * (ST - S0)
+  filas <- obtener_filas(e)
+  cantidad <- unname(e$patas)
+  primas <- if (modo == "last") filas$last else
+    ifelse(cantidad > 0, filas$ask, filas$bid)
+  for (j in seq_len(nrow(filas))) {
+    intrinseco <- if (filas$tipo[j] == "call")
+      pmax(ST - filas$strike[j], 0) else pmax(filas$strike[j] - ST, 0)
+    resultado <- resultado + multiplicador * cantidad[j] * (intrinseco - primas[j])
+  }
+  resultado
+}
+
+pnl_modelo_actual <- function(e, S_hipotetico) {
+  resultado <- e$acciones * (S_hipotetico - S0)
+  filas <- obtener_filas(e)
+  for (j in seq_len(nrow(filas))) {
+    valor <- bs_precio(S_hipotetico, filas$strike[j], T, r, q,
+                       filas$iv[j], filas$tipo[j])
+    resultado <- resultado + multiplicador * unname(e$patas[j]) *
+      (valor - filas$last[j])
+  }
+  resultado
+}
+
+griega_neta <- function(e) {
+  resultado <- c(Delta = as.numeric(e$acciones), Gamma = 0,
+                 Theta = 0, Vega = 0, Rho = 0)
+  for (j in seq_along(e$patas)) {
+    codigo <- names(e$patas)[j]
+    resultado <- resultado + multiplicador * unname(e$patas[j]) * bsm[codigo, ]
+  }
+  resultado
+}
+
+tabla_patas <- function(e) {
+  filas <- obtener_filas(e)
+  qty <- unname(e$patas)
+  tabla <- data.frame(
+    Instrumento = filas$codigo,
+    Operacion = ifelse(qty > 0, "Buy to Open", "Sell to Open (teórico)"),
+    Cantidad = abs(qty), Strike_USD = filas$strike,
+    Prima_Last = filas$last, Bid = filas$bid, Ask = filas$ask,
+    IV_pct = round(100 * filas$iv, 2), check.names = FALSE
+  )
+  if (e$acciones > 0) {
+    tabla <- rbind(data.frame(Instrumento = "Acciones GLW", Operacion = "Compra",
+                              Cantidad = e$acciones, Strike_USD = NA_real_,
+                              Prima_Last = S0, Bid = NA_real_, Ask = NA_real_,
+                              IV_pct = NA_real_), tabla)
+  }
+  tabla
+}
+
+tabla_griegas <- function(e) {
+  piezas <- list()
+  if (e$acciones != 0) {
+    piezas[[length(piezas) + 1]] <- data.frame(
+      Instrumento = paste0(e$acciones, " acciones"), Delta = e$acciones,
+      Gamma = 0, Theta = 0, Vega = 0, Rho = 0)
+  }
+  for (j in seq_along(e$patas)) {
+    codigo <- names(e$patas)[j]
+    v <- unname(e$patas[j]) * multiplicador * bsm[codigo, ]
+    piezas[[length(piezas) + 1]] <- data.frame(
+      Instrumento = paste(ifelse(e$patas[j] > 0, "+", "−"), codigo),
+      Delta = v["Delta"], Gamma = v["Gamma"], Theta = v["Theta"],
+      Vega = v["Vega"], Rho = v["Rho"], row.names = NULL)
+  }
+  resultado <- do.call(rbind, piezas)
+  neta <- griega_neta(e)
+  resultado <- rbind(resultado, data.frame(
+    Instrumento = "TOTAL ESTRATEGIA", Delta = neta["Delta"],
+    Gamma = neta["Gamma"], Theta = neta["Theta"],
+    Vega = neta["Vega"], Rho = neta["Rho"], row.names = NULL))
+  resultado[, -1] <- round(resultado[, -1], 4)
+  rownames(resultado) <- NULL
+  resultado
+}
+
+metricas_riesgo <- function(e) {
+  f <- obtener_filas(e); qty <- unname(e$patas)
+  credito <- prima_neta_usd(e, "last") / multiplicador
+  Kc <- function(tipo, signo) f$strike[f$tipo == tipo & sign(qty) == signo]
+  switch(e$id,
+    covered = { K <- Kc("call", -1)
+      c(K = K, max_ganancia = multiplicador * (K - S0 + credito),
+        min_pnl = multiplicador * (-S0 + credito),
+        breakeven_bajo = S0 - credito, breakeven_alto = NA_real_) },
+    collar = { Kp <- Kc("put", 1); Kk <- Kc("call", -1)
+      c(K = Kp, max_ganancia = multiplicador * (Kk - S0 + credito),
+        min_pnl = multiplicador * (Kp - S0 + credito),
+        breakeven_bajo = S0 - credito, breakeven_alto = NA_real_) },
+    bear_put = { Ka <- Kc("put", 1); Kb <- Kc("put", -1)
+      c(K = Kb, max_ganancia = multiplicador * (Ka - Kb + credito),
+        min_pnl = multiplicador * credito,
+        breakeven_bajo = Ka + credito, breakeven_alto = NA_real_) },
+    bear_call = { Kb <- Kc("call", -1); Ka <- Kc("call", 1)
+      c(K = Kb, max_ganancia = multiplicador * credito,
+        min_pnl = multiplicador * (Kb - Ka + credito),
+        breakeven_bajo = Kb + credito, breakeven_alto = NA_real_) },
+    strangle = { Kp <- Kc("put", 1); Kk <- Kc("call", 1)
+      c(K = Kp, max_ganancia = Inf, min_pnl = multiplicador * credito,
+        breakeven_bajo = Kp + credito, breakeven_alto = Kk - credito) },
+    stop("Estrategia desconocida"))
+}
+
+formato_usd <- function(valor) {
+  if (is.infinite(valor)) return("Sin límite al alza")
+  sprintf("%s%.2f USD", ifelse(valor < 0, "-", ""), abs(valor))
+}
+
+mostrar_datos <- function(e) {
+  cat("**Objetivo:** ", e$objetivo, "\n\n", sep = "")
+  cat("**Posiciones y cotizaciones:**\n\n")
+  cat(knitr::kable(tabla_patas(e), format = "html", digits = 2), "\n\n")
+  cat("**Prima neta de opciones (Last):** ",
+      formato_usd(prima_neta_usd(e, "last")),
+      " (positivo = cobro; negativo = desembolso).\n\n", sep = "")
+  cat("**Prima neta considerando Bid/Ask:** ",
+      formato_usd(prima_neta_usd(e, "bidask")),
+      " (escenario de costos basado en cotizaciones, sin garantía de ejecución).\n\n", sep = "")
+  cat("**Griegas del portafolio de la estrategia:**\n\n")
+  cat(knitr::kable(tabla_griegas(e), format = "html", digits = 4), "\n\n")
+  m <- metricas_riesgo(e)
+  resumen <- data.frame(
+    Indicador = c("Ganancia máxima al vencimiento", "Pérdida máxima al vencimiento",
+                  "Breakeven inferior o único", "Breakeven superior (si aplica)"),
+    Resultado = c(formato_usd(m["max_ganancia"]), formato_usd(abs(m["min_pnl"])),
+                  sprintf("%.2f USD/acción", m["breakeven_bajo"]),
+                  ifelse(is.na(m["breakeven_alto"]), "No aplica",
+                         sprintf("%.2f USD/acción", m["breakeven_alto"])))
+  )
+  cat("**Métricas de riesgo (primas Last):**\n\n")
+  cat(knitr::kable(resumen, format = "html"), "\n\n")
+}
+
+grafica_estrategia <- function(e) {
+  precios <- seq(120, 195, by = 0.25)
+  pnl_final <- pnl_vencimiento(e, precios, "last")
+  pnl_modelo <- pnl_modelo_actual(e, precios)
+  lim <- range(c(pnl_final, pnl_modelo))
+  op <- par(no.readonly = TRUE)
+  on.exit({ layout(1); par(op) }, add = TRUE)
+  layout(matrix(c(1, 2), ncol = 1), heights = c(4, 1))
+  par(mar = c(4.6, 5.0, 3.2, 1.4))
+  plot(precios, pnl_final, type = "n", ylim = lim,
+       xlab = "Precio final/hipotético de GLW (USD)",
+       ylab = "Ganancia o pérdida (USD)",
+       main = paste("P/L GLW:", e$nombre), cex.main = 1.15)
+  grid(col = "#e0e0e0")
+  abline(h = 0, col = "#555555", lwd = 1.3)
+  abline(v = S0, col = "#888888", lty = 3)
+  lines(precios, pnl_final, col = "#135b76", lwd = 2.7)
+  lines(precios, pnl_modelo, col = "#da7b28", lwd = 2, lty = 2)
+  points(S0, 0, pch = 19, col = "#333333", cex = 0.9)
+  par(mar = c(0, 0, 0, 0)); plot.new()
+  legend("center", bty = "n", cex = 0.85,
+         legend = c("P/L al vencimiento (primas Last)",
+                    "P/L teórico BS con 7 días restantes", "Spot de referencia (09-oct-2026)"),
+         col = c("#135b76", "#da7b28", "#888888"),
+         lty = c(1, 2, 3), lwd = c(2.7, 2, 1.3))
+}
+
+mostrar_escenarios <- function(e) {
+  escenarios <- c(130, 145, 150, S0, 162.5, 165, 175, 190)
+  escenarios_df <- data.frame(
+    Precio_GLW_vencimiento = escenarios,
+    PnL_Last_USD = round(pnl_vencimiento(e, escenarios, "last"), 2),
+    PnL_BidAsk_USD = round(pnl_vencimiento(e, escenarios, "bidask"), 2)
+  )
+  cat(knitr::kable(escenarios_df, format = "html", digits = 2), "\n\n")
+}
+
+mostrar_interpretacion <- function(e) {
+  g <- griega_neta(e)
+  signo <- function(x) if (x > 0.00001) "positiva" else
+    if (x < -0.00001) "negativa" else "cercana a cero"
+  cat("**Interpretación financiera.** ", e$lectura, "\n\n", sep = "")
+  if (e$id == "strangle") cat("La ganancia potencial es ilimitada al alza y limitada a la baja. Los equilibrios con Last son 146.36 y 168.64 USD: aproximadamente -6.59% y +7.63% desde el spot.\n\n")
+  cat(sprintf(paste0(
+    "- **Delta neta = %.2f:** sensibilidad inmediata aproximada del P/L a un ",
+    "incremento de 1 USD en GLW (si los demás factores permanecen constantes).\n"),
+    g["Delta"]))
+  cat(sprintf("- **Gamma neta = %.4f:** curvatura %s; modifica la Delta cuando cambia GLW.\n",
+              g["Gamma"], signo(g["Gamma"])))
+  cat(sprintf("- **Theta neta = %.2f USD/día:** impacto aproximado del paso de un día; signo %s.\n",
+              g["Theta"], signo(g["Theta"])))
+  cat(sprintf("- **Vega neta = %.2f USD por +1 pp de IV:** exposición %s a la volatilidad.\n",
+              g["Vega"], signo(g["Vega"])))
+  cat(sprintf("- **Rho neta = %.2f USD por +1 pp de tasa:** exposición %s a la tasa libre de riesgo.\n\n",
+              g["Rho"], signo(g["Rho"])))
+  cat("Las griegas son sensibilidades **locales**, no ganancias garantizadas. Los escenarios de vencimiento son no lineales y están calculados a partir de los payoffs reales de cada posición.\n\n")
+}
+
+mostrar_evidencias <- function(e) {
+  rutas <- e$imagenes[file.exists(e$imagenes)]
+  if (length(rutas) > 0) {
+    knitr::include_graphics(rutas)
+  } else {
+    cat("Capturas opcionales: para insertarlas automáticamente, sube también la carpeta `evidencias` del proyecto a Posit Cloud. El reporte funciona aunque no estén cargadas.\n")
+  }
+}
+```
+
+# Estrategia 1: Covered Call
+
+```{r covered-datos, results='asis'}
+mostrar_datos(estrategias$covered)
+```
+
+```{r covered-grafica, fig.cap='Covered Call: payoff final y valuación teórica con volatilidad constante.'}
+grafica_estrategia(estrategias$covered)
+```
+
+**Escenarios a vencimiento (USD):**
+
+```{r covered-escenarios, results='asis'}
+mostrar_escenarios(estrategias$covered)
+```
+
+```{r covered-lectura, results='asis'}
+mostrar_interpretacion(estrategias$covered)
+```
+
+**Evidencias disponibles (opcionales):**
+
+```{r covered-evidencia, echo=FALSE, out.width='90%'}
+mostrar_evidencias(estrategias$covered)
+```
+
+# Estrategia 2: Collar
+
+```{r collar-datos, results='asis'}
+mostrar_datos(estrategias$collar)
+```
+
+```{r collar-grafica, fig.cap='Collar: protección con Put 150 y techo con Call 162.50.'}
+grafica_estrategia(estrategias$collar)
+```
+
+**Escenarios a vencimiento (USD):**
+
+```{r collar-escenarios, results='asis'}
+mostrar_escenarios(estrategias$collar)
+```
+
+```{r collar-lectura, results='asis'}
+mostrar_interpretacion(estrategias$collar)
+```
+
+**Evidencias disponibles:**
+
+```{r collar-evidencia, echo=FALSE, out.width='90%'}
+mostrar_evidencias(estrategias$collar)
+```
+
+# Estrategia 3: Bear Put Spread
+
+```{r bear-put-datos, results='asis'}
+mostrar_datos(estrategias$bear_put)
+```
+
+```{r bear-put-grafica, fig.cap='Bear Put Spread: compra de Put 155 y venta teórica de Put 145.'}
+grafica_estrategia(estrategias$bear_put)
+```
+
+**Escenarios a vencimiento (USD):**
+
+```{r bear-put-escenarios, results='asis'}
+mostrar_escenarios(estrategias$bear_put)
+```
+
+```{r bear-put-lectura, results='asis'}
+mostrar_interpretacion(estrategias$bear_put)
+```
+
+**Evidencias disponibles (opcionales):**
+
+```{r bear-put-evidencia, echo=FALSE, out.width='90%'}
+mostrar_evidencias(estrategias$bear_put)
+```
+
+# Estrategia 4: Bear Call Spread
+
+```{r bear-call-datos, results='asis'}
+mostrar_datos(estrategias$bear_call)
+```
+
+```{r bear-call-grafica, fig.cap='Bear Call Spread: venta teórica de Call 165 y compra de Call 175.'}
+grafica_estrategia(estrategias$bear_call)
+```
+
+**Escenarios a vencimiento (USD):**
+
+```{r bear-call-escenarios, results='asis'}
+mostrar_escenarios(estrategias$bear_call)
+```
+
+```{r bear-call-lectura, results='asis'}
+mostrar_interpretacion(estrategias$bear_call)
+```
+
+**Evidencias disponibles (opcionales):**
+
+```{r bear-call-evidencia, echo=FALSE, out.width='90%'}
+mostrar_evidencias(estrategias$bear_call)
+```
+
+# Estrategia 5: Long Strangle
+
+```{r strangle-datos, results='asis'}
+mostrar_datos(estrategias$strangle)
+```
+
+```{r strangle-grafica, fig.cap='Long Strangle: Put 150 y Call 165 compradas.'}
+grafica_estrategia(estrategias$strangle)
+```
+
+**Escenarios a vencimiento (USD):**
+
+```{r strangle-escenarios, results='asis'}
+mostrar_escenarios(estrategias$strangle)
+```
+
+```{r strangle-lectura, results='asis'}
+mostrar_interpretacion(estrategias$strangle)
+```
+
+**Evidencias disponibles (opcionales):**
+
+```{r strangle-evidencia, echo=FALSE, out.width='90%'}
+mostrar_evidencias(estrategias$strangle)
+```
+
+# Comparación de las cinco estrategias
+
+```{r resumen-final}
+comparar <- function(e) {
+  m <- metricas_riesgo(e)
+  g <- griega_neta(e)
+  data.frame(
+    Estrategia = e$nombre,
+    Acciones = e$acciones,
+    Prima_neta_USD = round(prima_neta_usd(e), 2),
+    PnL_max_USD = ifelse(is.infinite(m["max_ganancia"]), "Ilimitado al alza",
+                         sprintf("%.2f", m["max_ganancia"])),
+    Perdida_max_USD = round(abs(m["min_pnl"]), 2),
+    BE_inferior = round(m["breakeven_bajo"], 2),
+    BE_superior = round(m["breakeven_alto"], 2),
+    Delta_neta = round(g["Delta"], 2),
+    Gamma_neta = round(g["Gamma"], 4),
+    Theta_USD_dia = round(g["Theta"], 2),
+    Vega_USD_1pp = round(g["Vega"], 2),
+    Rho_USD_1pp = round(g["Rho"], 2),
+    row.names = NULL
+  )
+}
+resumen <- do.call(rbind, lapply(estrategias, comparar))
+knitr::kable(resumen, caption = "Comparación de cinco alternativas independientes, usando Last Price")
+```
+
+```{r comparacion-grafica, fig.height=6, fig.cap='Payoff de las cinco estrategias al vencimiento. No representa un portafolio agregado.'}
+op_comparacion <- par(no.readonly = TRUE)
+layout(matrix(c(1, 2), ncol = 1), heights = c(5, 1))
+par(mar = c(4.6, 5, 3.2, 1.4))
+precios <- seq(130, 190, by = 0.25)
+colores <- c("#135b76", "#3c8d65", "#b65055", "#8c67a9", "#cc8a2b")
+matriz_pnl <- sapply(estrategias, pnl_vencimiento, ST = precios, modo = "last")
+matplot(precios, matriz_pnl, type = "l", lty = 1, lwd = 2.4,
+        col = colores, xlab = "GLW al vencimiento (USD)",
+        ylab = "Ganancia/pérdida (USD)",
+        main = "GLW: comparación de P/L al vencimiento")
+abline(h = 0, lty = 2, col = "#666666")
+grid(col = "#e6e6e6")
+par(mar = c(0, 0, 0, 0)); plot.new()
+legend("center", ncol = 3, legend = vapply(estrategias, `[[`, character(1), "nombre"),
+       col = colores, lty = 1, lwd = 2.4, bty = "n", cex = 0.82)
+layout(1); par(op_comparacion)
+```
+
+## Conclusiones
+
+1. **Covered Call:** genera ingresos por prima, pero conserva el riesgo principal de una posición accionaria larga. Su Delta neta debería permanecer positiva.
+2. **Collar:** establece un intervalo de resultados, útil para protección de acciones con un costo neto pequeño o incluso un crédito (según primas); hay un tope de ganancia.
+3. **Bear Put Spread:** expresa una tesis bajista con desembolso limitado, protegiendo el costo frente a comprar solamente la Put 155.
+4. **Bear Call Spread:** expresa una tesis neutral/bajista con prima cobrada, a cambio del riesgo de una subida fuerte, mitigado por la Call 175 comprada.
+5. **Long Strangle:** busca desplazamientos grandes en cualquier dirección; generalmente sufre por el paso del tiempo si no ocurre un movimiento suficientemente fuerte.
+
+**Alcance de la comparación:** los cinco casos son **alternativas**, no cinco carteras ejecutadas ni una posición neta consolidada. Los payoffs incorporan las primas observadas, pero no comisiones, deslizamiento de ejecución, costo de financiación, asignación temprana, márgenes ni dividendos reales. *Bid/Ask* ofrece una evaluación alternativa más prudente de los costos y créditos.
+
+**Relación con TecGPT.** La conversación adjunta propuso inicialmente plazos de 30 a 90 DTE y calls 165 para Covered Call y Collar. Este análisis usa 7 días naturales y Call 162.50 para esas dos estrategias. Es una adaptación académica a los contratos observados; no se presenta como una réplica exacta de esos vencimientos y strikes. El Bear Put Spread sin acciones es una posición bajista independiente; para llamarlo cobertura de una cartera larga habría que incluir y medir esa cartera. El Bear Call Spread limita su pérdida propia y no fija un piso para las acciones. El Long Strangle aporta exposición a movimiento y volatilidad, pero su eficacia como cobertura depende del portafolio que se pretenda cubrir.
+
+**Evidencias del simulador.** Las capturas de Investopedia y TradingView documentan los contratos de GLW utilizados. Los formularios y vistas previas del simulador muestran cotizaciones y permiten identificar los contratos; no acreditan que se hayan ejecutado las cinco estrategias. Sell to Close cierra una posición larga y no abre una venta corta, por lo que las patas cortas se modelan de forma teórica.
+
+
+## Fuentes de la propuesta
+
+Investopedia aporta las cotizaciones históricas usadas en el cálculo del 9 de octubre de 2026. LSEG permite revisar la cadena de opciones, Bid/Ask, volumen, open interest, IV y Delta. Las consultas de LSEG y las configuraciones de OptionStrat se realizaron el 14 de octubre, conservando el vencimiento del 16 de octubre, un contrato por pata y 100 acciones en Covered Call y Collar. OptionStrat usa cotizaciones diferidas y primas de esa consulta, por lo que sus costos, equilibrios y griegas pueden diferir del cálculo histórico. Las capturas se usan para contrastar la estructura y el perfil del payoff, sin sustituir los datos del 9 de octubre.
+
+En la consulta del 14 de octubre, GLW cotiza cerca de 141 USD, por debajo del spot histórico de 156.68 USD. Las puts 145, 150 y 155 pasan a estar ITM y las calls seleccionadas siguen OTM. El cambio del spot, las primas y el plazo restante explica que los resultados visibles en OptionStrat sean distintos de los calculados para el 9 de octubre.
+
+Las guías de MenthorQ respaldan la composición y el objetivo de las cinco estrategias. La cuenta consultada permite acceder a esas guías; los indicadores específicos de AAPL y GLW requieren Premium, por lo que no se incorporan señales GEX ni datos de posicionamiento de MenthorQ al cálculo.
+
+- **Covered Call:** combina 100 acciones y una call vendida; cobra prima y limita la ganancia al alza, conservando el riesgo de caída de las acciones. [MenthorQ](https://menthorq.com/guide/covered-call/).
+- **Collar:** añade una put comprada y una call vendida a las acciones, estableciendo un piso y un techo del P/L al vencimiento. [MenthorQ](https://menthorq.com/guide/collar/).
+- **Bear Put Spread:** compra la put de strike mayor y vende la de strike menor; expresa una expectativa bajista con pérdida y ganancia limitadas. [MenthorQ](https://menthorq.com/guide/bear-put-spread/).
+- **Bear Call Spread:** vende la call de strike menor y compra la de strike mayor; cobra un crédito y limita la pérdida ante una subida. [MenthorQ](https://menthorq.com/guide/bear-call-spread/).
+- **Long Strangle:** compra una put y una call de strikes distintos; necesita un movimiento suficiente para superar el costo de las primas. Su pérdida máxima es el débito. [MenthorQ](https://menthorq.com/guide/long-strangle-strategy/).
+
+Los signos de Gamma, Theta y Vega de los spreads dependen del spot, el plazo y la volatilidad; se interpretan con las griegas netas calculadas en este documento. La [lección de Gamma de CME](https://www.cmegroup.com/education/courses/option-greeks/options-gamma-the-greeks.html) explica la variación de Delta ante cambios del subyacente. Se usa como apoyo conceptual, ya que las opciones sobre AAPL y GLW de este análisis no son contratos de CME.
+
+La propuesta inicial de TecGPT se conserva en el [PDF de la conversación](TecGPT.pdf). La selección final de contratos y la interpretación cuantitativa se desarrollan en los dos análisis.
+
+### LSEG
+
+Cadena de GLW con vencimiento del 16 de octubre de 2026, consultada el 14 de octubre.
+
+```{r glw-lseg-calls, echo=FALSE, out.width="100%", fig.cap="LSEG: GLW, calls, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/LSEG/GLW_calls.jpg")
+```
+
+```{r glw-lseg-puts, echo=FALSE, out.width="100%", fig.cap="LSEG: GLW, puts, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/LSEG/GLW_puts.jpg")
+```
+
+### OptionStrat
+
+Configuraciones de GLW con los strikes de la propuesta y vencimiento del 16 de octubre de 2026. Las primas corresponden a la consulta del 14 de octubre.
+
+```{r glw-optionstrat-covered-call, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Covered Call de GLW, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/GLW/Covered_Call.jpg")
+```
+
+```{r glw-optionstrat-collar, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Collar de GLW, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/GLW/Collar.jpg")
+```
+
+```{r glw-optionstrat-bear-put-spread, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Bear Put Spread de GLW, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/GLW/Bear_Put_Spread.jpg")
+```
+
+```{r glw-optionstrat-bear-call-spread, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Bear Call Spread de GLW, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/GLW/Bear_Call_Spread.jpg")
+```
+
+```{r glw-optionstrat-long-strangle-strategy, echo=FALSE, out.width="100%", fig.cap="OptionStrat: Long Strangle de GLW, consulta del 14 de octubre de 2026."}
+knitr::include_graphics("Capturas/OptionStrat/GLW/Long_Strangle.jpg")
+```
+
+### MenthorQ
+
+Guías consultadas el 14 de octubre de 2026 para fundamentar la composición de cada estrategia.
+
+```{r glw-menthor-covered-call, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Covered Call."}
+knitr::include_graphics("Capturas/MenthorQ/Covered_Call.jpg")
+```
+
+```{r glw-menthor-collar, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Collar."}
+knitr::include_graphics("Capturas/MenthorQ/Collar.jpg")
+```
+
+```{r glw-menthor-bear-put-spread, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Bear Put Spread."}
+knitr::include_graphics("Capturas/MenthorQ/Bear_Put_Spread.jpg")
+```
+
+```{r glw-menthor-bear-call-spread, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Bear Call Spread."}
+knitr::include_graphics("Capturas/MenthorQ/Bear_Call_Spread.jpg")
+```
+
+```{r glw-menthor-long-strangle-strategy, echo=FALSE, out.width="100%", fig.cap="MenthorQ: guía de Long Strangle."}
+knitr::include_graphics("Capturas/MenthorQ/Long_Strangle.jpg")
+```
+
+### CME
+
+```{r glw-cme-gamma, echo=FALSE, out.width="100%", fig.cap="CME: Gamma y su relación con Delta."}
+knitr::include_graphics("Capturas/CME/Gamma.jpg")
+```
