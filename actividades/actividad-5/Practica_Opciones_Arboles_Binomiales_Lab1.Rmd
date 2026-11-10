@@ -1,0 +1,399 @@
+---
+title: "Practica Opciones y Arboles Binomiales - Lab1"
+author: "Lesly Vásquez, Daniela Durango"
+date: "2025-04-07"
+lang: es
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: paged
+---
+
+> Conversión a R Markdown del documento publicado en RPubs (<https://rpubs.com/LeslyV/1294100>).
+> Código optimizado para memoria: todo el flujo se encapsula en funciones vectorizadas
+> (sin `bind_rows` dentro de ciclos, sin guardar matrices intermedias por activo) y se
+> repite el mismo ejercicio para Corning (GLW) y Apple (AAPL) en la sección 12.
+> Requiere conexión a internet (`tq_get` descarga precios de Yahoo Finance).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+# Librerías (instalar con install.packages() si faltan)
+library(tidyverse)     # dplyr, tidyr, ggplot2, tibble
+library(tidyquant)     # tq_get, tq_transmute
+library(timetk)        # tk_xts
+library(knitr)         # kable
+library(kableExtra)    # kable_styling
+library(igraph)        # graph_from_data_frame
+library(ggraph)        # ggraph, geom_edge_link, geom_node_label
+```
+
+# 0. Funciones (se reutilizan en ambos ejercicios)
+
+```{r funciones}
+# --- Datos: precios ajustados + retornos log diarios (solo columnas necesarias) ---
+descargar_datos <- function(tick, start, end) {
+  precios <- tq_get(tick, from = start, to = end, get = "stock.prices") %>%
+    select(symbol, date, adjusted)
+  ret <- precios %>%
+    group_by(symbol) %>%
+    tq_transmute(select = adjusted, mutate_fun = periodReturn,
+                 period = "daily", col_rename = "ret", type = "log") %>%
+    ungroup()
+  ret_xts <- ret %>%
+    pivot_wider(names_from = symbol, values_from = ret) %>%
+    tk_xts(date_var = date, silent = TRUE)
+  ret_xts <- ret_xts[, tick]                       # mismo orden que 'tick'
+  ultimo <- precios %>% group_by(symbol) %>% slice_max(date, n = 1) %>% ungroup()
+  list(precios = precios, ret = ret, ret_xts = ret_xts,
+       latest_prices = setNames(ultimo$adjusted, ultimo$symbol)[tick])
+}
+
+# --- Media-varianza por Monte Carlo (vectorizado, sin ciclo for) ---
+min_varianza <- function(ret_xts, num_port = 5000, seed = 123) {
+  tick <- colnames(ret_xts); k <- length(tick)
+  cov_mat  <- cov(ret_xts) * 252
+  mean_ret <- colMeans(ret_xts)
+  set.seed(seed)
+  W <- matrix(runif(num_port * k), ncol = k, byrow = TRUE, dimnames = list(NULL, tick))
+  W <- W / rowSums(W)
+  ret_p  <- (drop(W %*% mean_ret) + 1)^252 - 1
+  risk_p <- sqrt(rowSums((W %*% cov_mat) * W))
+  best <- which.min(risk_p)
+  list(cov_mat = cov_mat, mean_ret = mean_ret,
+       media_var = as_tibble(W[best, , drop = FALSE]) %>%
+         mutate(Return = ret_p[best], Risk = risk_p[best], SharpeRatio = ret_p[best] / risk_p[best]),
+       weights = W[best, ])
+}
+
+# --- MGB: acumula directo el valor del portafolio (no guarda una matriz por activo) ---
+simular_portafolio <- function(S0, shares, mu, sigma, Nsim = 5000, trimestres = 8,
+                               dt = 0.25, seed = 123) {
+  set.seed(seed)
+  port <- matrix(0, nrow = trimestres + 1, ncol = Nsim)
+  for (a in names(S0)) {
+    z <- matrix(rnorm(trimestres * Nsim), nrow = trimestres, byrow = TRUE)
+    inc <- (mu[a] - 0.5 * sigma[a]^2) * dt + sigma[a] * sqrt(dt) * z
+    port <- port + shares[a] * S0[a] * exp(rbind(0, apply(inc, 2, cumsum)))
+  }
+  port
+}
+
+# --- Retorno, volatilidad y VaR trimestral ---
+analizar_var <- function(port) {
+  R  <- diff(log(port))                     # trimestres x Nsim
+  v0 <- mean(port[1, ])
+  q  <- apply(R, 1, quantile, probs = c(0.01, 0.05), na.rm = TRUE)
+  tibble(
+    Trimestre = seq_len(nrow(R)),
+    `Retorno Esperado (%)`     = round(rowMeans(R) * 100, 3),
+    `Volatilidad Esperada (%)` = round(apply(R, 1, sd) * 100, 3),
+    `VaR 1% (USD)` = round(-q[1, ] * v0, 2),
+    `VaR 5% (USD)` = round(-q[2, ] * v0, 2)
+  )
+}
+
+# --- Árbol binomial vectorizado: memoria O(n) en vez de matriz (n+1)x(n+1) ---
+binomial_option <- function(S, K, r, T, sigma, n, tipo = "call", americana = FALSE) {
+  S <- unname(S); K <- unname(K); sigma <- unname(sigma)
+  dt <- T / n; u <- exp(sigma * sqrt(dt)); d <- 1 / u
+  p <- (exp(r * dt) - d) / (u - d); disc <- exp(-r * dt)
+  sgn <- if (tipo == "call") 1 else -1
+  v <- pmax(sgn * (S * u^(0:n) * d^(n:0) - K), 0)
+  for (j in (n - 1):0) {
+    v <- disc * (p * v[2:(j + 2)] + (1 - p) * v[1:(j + 1)])
+    if (americana) v <- pmax(v, sgn * (S * u^(0:j) * d^(j:0) - K))
+  }
+  v[1]
+}
+
+valuar_opciones <- function(S0, sigma, r, T, n) {
+  a <- names(S0)
+  tibble(Accion = a, Spot = unname(S0),
+         Call_Euro = vapply(a, function(x) binomial_option(S0[x], S0[x], r, T, sigma[x], n), numeric(1)),
+         Call_Amer = vapply(a, function(x) binomial_option(S0[x], S0[x], r, T, sigma[x], n, americana = TRUE), numeric(1)))
+}
+
+rolling_calls <- function(valor_esperado, sigma, r, T, n, trimestres) {
+  g <- expand.grid(Accion = names(sigma), Trimestre = seq_len(trimestres), stringsAsFactors = FALSE)
+  g$Valor_Call <- mapply(function(t, a) {
+    S <- valor_esperado[t]; binomial_option(S, S, r, T, sigma[a], n)
+  }, g$Trimestre, g$Accion)
+  as_tibble(g[, c("Trimestre", "Accion", "Valor_Call")])
+}
+
+graficar_arbol <- function(S, sigma, T = 1, n = 3, titulo = "Árbol Binomial") {
+  u <- exp(unname(sigma) * sqrt(T / n)); d <- 1 / u
+  nodos <- expand.grid(i = 0:n, j = 0:n) %>% filter(i + j <= n) %>%
+    mutate(Precio = unname(S) * u^i * d^j, name = paste(i, j, sep = ","))
+  e <- filter(nodos, i + j < n)
+  edges_df <- data.frame(from = rep(e$name, 2),
+                         to   = c(paste(e$i + 1, e$j, sep = ","), paste(e$i, e$j + 1, sep = ",")))
+  g <- graph_from_data_frame(edges_df, vertices = select(nodos, name, Precio), directed = TRUE)
+  ggraph(g, layout = "tree") +
+    geom_edge_link() +
+    geom_node_label(aes(label = round(Precio, 2))) +
+    labs(title = titulo) +
+    theme_void()
+}
+
+# Parámetros comunes
+start <- as.Date("2022-06-01")
+end <- as.Date("2025-03-31")
+investment <- 1e6
+r <- 0.0372; n <- 3; T_opc <- 2
+Nsim <- 5000; trimestres <- 8
+cobertura_pct <- 0.85
+```
+
+**Interpretación:** Todas las etapas del análisis se definen una sola vez como funciones. Así, el ejercicio se puede repetir con otras acciones sin duplicar código ni acumular objetos en memoria.
+
+# 1. Parámetros generales
+
+```{r parametros}
+tick <- c("MLGO", "NCNO", "CORT")
+```
+
+**Interpretación:** Se definen los símbolos de las acciones a analizar y el rango de tiempo para obtener los datos históricos.
+
+# 2. Carga de precios históricos (2022-06-01 a 2025-03-31)
+
+```{r precios}
+datos <- descargar_datos(tick, start, end)
+latest_prices <- datos$latest_prices
+
+#Precios históricos (primeras filas)
+head(datos$precios)
+#Retornos logaritmicos (primeras filas)
+head(datos$ret_xts)
+```
+
+**Interpretación:** Se descargan los precios ajustados y se calculan los retornos logarítmicos diarios para cada acción.
+
+# 3. Visualización de retornos
+
+```{r retornos-grafica}
+ggplot(datos$ret, aes(x = date, y = ret, color = symbol)) +
+  geom_line() +
+  facet_wrap(~symbol, scales = "free_y") +
+  labs(title = "Retornos diarios por acción", x = "Fecha", y = "Retorno", color = "Acción") +
+  theme_minimal()
+```
+
+**Interpretación:** Se visualizan los retornos diarios por acción, lo cual permite evidenciar su volatilidad y comportamiento temporal.
+
+# 4. Portafolio de media varianza
+
+```{r media-varianza}
+mv <- min_varianza(datos$ret_xts, num_port = 5000)
+weights_media <- mv$weights
+sigma_annual  <- sqrt(diag(mv$cov_mat))
+mu_annual     <- mv$mean_ret * 252
+mv$cov_mat
+mv$media_var
+```
+
+**Interpretación:** Se optimiza un portafolio de mínima varianza generando múltiples combinaciones de pesos y se elige aquella con menor riesgo.
+
+# 5. Distribución de $1 millón de dólares
+
+```{r distribucion}
+shares <- investment * weights_media / latest_prices
+shares
+```
+
+**Interpretación:** Se determina la cantidad de acciones a comprar con una inversión total de USD 1 millón, de acuerdo con los pesos óptimos.
+
+# 6. Simulación MGB desde 2025-04-01 hasta 2027-04-01 (5000 simulaciones por acción)
+
+```{r simulacion-mgb}
+portfolio_sim <- simular_portafolio(latest_prices, shares, mu_annual, sigma_annual,
+                                    Nsim = Nsim, trimestres = trimestres)
+sim_summary <- tibble(Trimestre = 0:trimestres, Valor_Esperado = rowMeans(portfolio_sim))
+sim_summary
+```
+
+**Interpretación:** Se simula la evolución del portafolio durante 2 años, proyectando el valor del portafolio en cada trimestre mediante MGB.
+
+# 7. Análisis de Retorno, Volatilidad y VaR
+
+```{r var}
+analisis_trimestral <- analizar_var(portfolio_sim)
+rm(portfolio_sim); invisible(gc())        # libera la matriz de simulaciones
+
+kable(analisis_trimestral, caption = "Análisis Trimestral del Portafolio Simulado") %>%
+  kable_styling()
+```
+
+**Interpretación:** Se evalúa el comportamiento del portafolio en términos de retorno, riesgo y pérdida máxima esperada (VaR) por trimestre.
+
+# 8. Cobertura con Opciones Europeas y Americanas (Árbol Binomial)
+
+```{r arbol-opciones}
+option_data <- valuar_opciones(latest_prices, sigma_annual, r, T_opc, n)
+kable(option_data, caption = "Opciones Europeas y Americanas - Valoración con Árbol Binomial") %>%
+  kable_styling()
+```
+
+**Interpretación:** Se valúan las opciones europeas y americanas tipo call mediante el modelo binomial con 3 pasos.
+
+# 9. Rolling trimestral de opciones Call Europeas
+
+```{r rolling}
+call_rolling <- rolling_calls(sim_summary$Valor_Esperado, sigma_annual, r, T_opc, n, trimestres)
+kable(call_rolling, caption = "Rolling Trimestral de Opciones Call Europeas") %>%
+  kable_styling()
+```
+
+**Interpretación:** Se realiza la evaluación trimestral de opciones Call Europeas con strike ajustado al spot, para hacer cobertura dinámica.
+
+# 10. Visualización del árbol binomial (Call Europea)
+
+```{r arbol-grafica}
+graficar_arbol(latest_prices["MLGO"], sigma_annual["MLGO"], T = 1, n = 3,
+               titulo = "Árbol Binomial - Call Europea MLGO")
+```
+
+**Interpretación:** Se visualiza la estructura del árbol binomial para una Call Europea, mostrando la evolución esperada de precios.
+
+# 11. Cobertura financiera y distribución entre activos
+
+```{r cobertura}
+cobertura_dist <- cobertura_pct * investment * weights_media
+cobertura_dist
+```
+
+**Interpretación:** Se define una estrategia de cobertura trimestral del 85% del portafolio, distribuida según los pesos óptimos en acciones.
+
+# Justificación final
+
+Se desarrolló una estrategia de inversión diversificada usando media-varianza, simulación de precios mediante MGB y análisis de riesgo con VaR. La cobertura se realizó mediante opciones Call Europeas evaluadas con árboles binomiales, con rolling trimestral, y se definió un porcentaje fijo de cobertura con distribución proporcional. Esta metodología permite gestionar de forma activa el riesgo y proyectar el valor del portafolio con fundamentos sólidos.
+
+## ¿Cómo se divide el dinero para la cobertura de las opciones?
+
+El monto destinado a la cobertura se calculó como el 85% del total del portafolio. Luego, este valor se distribuyó entre las acciones del portafolio en proporción a los pesos de mínima varianza asignados a cada activo. Esto asegura que la cobertura sea coherente con la estructura del portafolio base.
+
+# 12. Mismo ejercicio con Corning (GLW) y Apple (AAPL)
+
+```{r limpiar-ej1}
+# Libera los objetos del primer ejercicio antes de empezar
+rm(datos, mv, weights_media, sigma_annual, mu_annual, shares, sim_summary,
+   analisis_trimestral, option_data, call_rolling, cobertura_dist, latest_prices)
+invisible(gc())
+```
+
+## 12.1 Parámetros generales
+
+```{r g-parametros}
+tick_g <- c("GLW", "AAPL")
+```
+
+**Interpretación:** Se analizan Corning (GLW) y Apple (AAPL) en el mismo periodo (2022-06-01 a 2025-03-31) y con los mismos supuestos del ejercicio anterior.
+
+## 12.2 Carga de precios históricos
+
+```{r g-precios}
+datos_g <- descargar_datos(tick_g, start, end)
+latest_prices_g <- datos_g$latest_prices
+head(datos_g$precios)
+head(datos_g$ret_xts)
+```
+
+**Interpretación:** Se descargan los precios ajustados de GLW y AAPL y se calculan sus retornos logarítmicos diarios.
+
+## 12.3 Visualización de retornos
+
+```{r g-retornos-grafica}
+ggplot(datos_g$ret, aes(x = date, y = ret, color = symbol)) +
+  geom_line() +
+  facet_wrap(~symbol, scales = "free_y") +
+  labs(title = "Retornos diarios: GLW y AAPL", x = "Fecha", y = "Retorno", color = "Acción") +
+  theme_minimal()
+```
+
+**Interpretación:** Se compara la volatilidad diaria de ambas acciones a lo largo del periodo.
+
+## 12.4 Portafolio de media varianza
+
+```{r g-media-varianza}
+mv_g <- min_varianza(datos_g$ret_xts, num_port = 5000)
+weights_media_g <- mv_g$weights
+sigma_annual_g  <- sqrt(diag(mv_g$cov_mat))
+mu_annual_g     <- mv_g$mean_ret * 252
+mv_g$cov_mat
+mv_g$media_var
+```
+
+**Interpretación:** Se obtiene la combinación GLW/AAPL de mínima varianza entre 5,000 portafolios simulados.
+
+## 12.5 Distribución de $1 millón de dólares
+
+```{r g-distribucion}
+shares_g <- investment * weights_media_g / latest_prices_g
+shares_g
+```
+
+**Interpretación:** Número de acciones de GLW y AAPL que se compran con USD 1 millón según los pesos óptimos.
+
+## 12.6 Simulación MGB (5000 simulaciones, 8 trimestres)
+
+```{r g-simulacion-mgb}
+portfolio_sim_g <- simular_portafolio(latest_prices_g, shares_g, mu_annual_g, sigma_annual_g,
+                                      Nsim = Nsim, trimestres = trimestres)
+sim_summary_g <- tibble(Trimestre = 0:trimestres, Valor_Esperado = rowMeans(portfolio_sim_g))
+sim_summary_g
+```
+
+**Interpretación:** Proyección trimestral del valor esperado del portafolio GLW/AAPL a 2 años mediante MGB.
+
+## 12.7 Análisis de Retorno, Volatilidad y VaR
+
+```{r g-var}
+analisis_trimestral_g <- analizar_var(portfolio_sim_g)
+rm(portfolio_sim_g); invisible(gc())
+
+kable(analisis_trimestral_g, caption = "Análisis Trimestral del Portafolio Simulado (GLW / AAPL)") %>%
+  kable_styling()
+```
+
+**Interpretación:** Retorno, volatilidad y VaR al 1% y 5% por trimestre para el portafolio GLW/AAPL.
+
+## 12.8 Opciones Europeas y Americanas (Árbol Binomial)
+
+```{r g-arbol-opciones}
+option_data_g <- valuar_opciones(latest_prices_g, sigma_annual_g, r, T_opc, n)
+kable(option_data_g, caption = "Opciones Europeas y Americanas GLW / AAPL - Árbol Binomial") %>%
+  kable_styling()
+```
+
+**Interpretación:** Valuación de calls europeas y americanas ATM a 2 años con árbol binomial de 3 pasos.
+
+## 12.9 Rolling trimestral de opciones Call Europeas
+
+```{r g-rolling}
+call_rolling_g <- rolling_calls(sim_summary_g$Valor_Esperado, sigma_annual_g, r, T_opc, n, trimestres)
+kable(call_rolling_g, caption = "Rolling Trimestral de Opciones Call Europeas (GLW / AAPL)") %>%
+  kable_styling()
+```
+
+**Interpretación:** Evaluación trimestral de las calls con strike ajustado al spot, para la cobertura dinámica.
+
+## 12.10 Visualización del árbol binomial (Call Europea GLW)
+
+```{r g-arbol-grafica}
+graficar_arbol(latest_prices_g["GLW"], sigma_annual_g["GLW"], T = 1, n = 3,
+               titulo = "Árbol Binomial - Call Europea GLW")
+```
+
+**Interpretación:** Estructura del árbol binomial de precios para GLW.
+
+## 12.11 Cobertura financiera y distribución entre activos
+
+```{r g-cobertura}
+cobertura_dist_g <- cobertura_pct * investment * weights_media_g
+cobertura_dist_g
+```
+
+**Interpretación:** Se cubre el 85% del portafolio, distribuido entre GLW y AAPL según los pesos de mínima varianza.
