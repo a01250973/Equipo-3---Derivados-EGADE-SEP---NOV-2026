@@ -40,6 +40,14 @@ Como Apple no tiene un bono convertible en circulación, se tomó un bono straig
 
 La Actividad 6 extiende el primer avance al estimar la volatilidad de AAPL con datos de cinco años y comparar modelos con criterios estadísticos. La volatilidad pronosticada se integra en la opción de conversión, que también se estudia con un árbol CRR para ejercicio americano y con simulación Monte Carlo. El dashboard y los archivos de la continuación están en [actividades/actividad-6](actividades/actividad-6/).
 
+### Versión integradora agregada por el equipo
+
+El equipo añadió una versión consolidada del proyecto en la carpeta del [Avance 1](proyecto-final/avances/avance-1/). Estos archivos amplían el análisis del convertible con GARCH y reúnen el cierre de las actividades relacionadas:
+
+- [Notebook integrador](proyecto-final/avances/avance-1/PROYECTO_FINAL_DERIVATIVES.ipynb): incluye valuación del convertible, volatilidad GARCH, simulaciones, riesgo de portafolio AAPL–GLW, estrategias con opciones y swaps, y el seguimiento/cierre del simulador Investopedia.
+- [Dashboard del convertible AAPL con GARCH](proyecto-final/avances/avance-1/AAPL_Convertible_GARCH_Dashboard.html): presentación interactiva de los resultados principales.
+- [Exportación HTML del notebook](proyecto-final/avances/avance-1/PROYECTO_FINAL_DERIVATIVES_codigo.html): reporte con el código y los resultados del análisis.
+
 ## Organización
 
 Cada carpeta contiene, cuando están disponibles, los archivos fuente (R Markdown o notebooks), sus resultados exportados (HTML/PDF) y materiales de apoyo. En esta copia pública se sustituyeron las matrículas encontradas por [MATRICULA REDACTADA].
