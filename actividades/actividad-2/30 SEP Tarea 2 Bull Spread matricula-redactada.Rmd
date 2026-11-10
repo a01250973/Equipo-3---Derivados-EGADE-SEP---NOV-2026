@@ -1,0 +1,288 @@
+---
+title: "Tarea 2 Bull Spread [MATRICULA REDACTADA]"
+output: html_document
+date: "2026-10-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+## Tarea 2. Bull Spread
+
+## Detalles de las posiciones
+```{r}
+
+# Variables de las posiciones
+
+strike_prc_1 <- 88.50       # Strike de la Call comprada
+call_prc_1 <- 3.36          # Prima pagada por la Call comprada
+
+strike_prc_2 <- 89.75       # Strike de la Call vendida
+call_prc_2 <- 2.79          # Prima recibida por la Call vendida
+
+# Tamaño del contrato de WTI West Texas Crude Oil
+
+contract_size <- 1000       # número de barriles
+
+# Rango de precios del futuro al vencimiento
+
+future_prc_range <- seq(
+  from = 80,
+  to = 100,
+  by = 0.1
+)
+```
+
+## Análisis de ganancia/pérdida
+```{r}
+# Prima neta pagada por barril
+
+net_premium <- call_prc_1 - call_prc_2
+
+
+# Call comprada (Long Call)
+
+bought_call_profit <-
+  pmax(
+    future_prc_range - strike_prc_1,
+    0
+  ) - call_prc_1
+
+
+# Call vendida (Short Call)
+
+sold_call_profit <-
+  call_prc_2 -
+  pmax(
+    future_prc_range - strike_prc_2,
+    0
+  )
+
+
+# Resultado total del Bull Call Spread
+
+bull_spread_profit <-
+  bought_call_profit +
+  sold_call_profit
+```
+
+# Indicadores de la estrategia Bull Spread
+```{r}
+
+# Punto de equilibrio
+
+breakeven <-
+  strike_prc_1 +
+  net_premium
+
+
+# Pérdida máxima por barril
+
+max_loss <-
+  -net_premium
+
+
+# Ganancia máxima por barril
+
+max_gain <-
+  (strike_prc_2 - strike_prc_1) -
+  net_premium
+
+
+# Conversión a USD por contrato
+
+max_loss_usd <-
+  max_loss * contract_size
+
+max_gain_usd <-
+  max_gain * contract_size
+
+```
+
+## Resultados
+```{r}
+
+net_premium
+breakeven
+max_loss_usd
+max_gain_usd
+
+```
+
+## Gráfica Bull Spread
+```{r}
+# Configuración de la gráfica
+
+par(mar = c(5.1, 4.1, 4.1, 8.1))
+
+
+# Conversión de los resultados a USD por contrato
+
+bought_call_profit_usd <-
+  bought_call_profit * contract_size
+
+sold_call_profit_usd <-
+  sold_call_profit * contract_size
+
+bull_spread_profit_usd <-
+  bull_spread_profit * contract_size
+
+
+# Límites de la gráfica
+
+y_min <- min(c(
+  bull_spread_profit_usd,
+  bought_call_profit_usd,
+  sold_call_profit_usd
+))
+
+y_max <- max(c(
+  bull_spread_profit_usd,
+  bought_call_profit_usd,
+  sold_call_profit_usd
+))
+
+y_pad <- 0.08 * (y_max - y_min)
+
+
+# Gráfica del Bull Call Spread
+
+plot(
+  x = future_prc_range,
+  y = bull_spread_profit_usd,
+  type = "l",
+  lwd = 2,
+  main = paste0(
+    "Bull Call Spread Crude Oil (K1 = ",
+    strike_prc_1,
+    ", K2 = ",
+    strike_prc_2,
+    ", Débito = ",
+    round(net_premium, 2),
+    ")"
+  ),
+  xlab = "Precio del futuro al vencimiento (USD/barril)",
+  ylab = "Ganancia/Pérdida total (USD)",
+  ylim = c(
+    y_min - y_pad,
+    y_max + y_pad
+  )
+)
+
+# Call comprada
+
+lines(
+  x = future_prc_range,
+  y = bought_call_profit_usd,
+  col = "blue",
+  lty = 2,
+  lwd = 2
+)
+
+
+# Call vendida
+
+lines(
+  x = future_prc_range,
+  y = sold_call_profit_usd,
+  col = "red",
+  lty = 2,
+  lwd = 2
+)
+
+# Línea horizontal en cero
+
+abline(
+  h = 0,
+  col = "gray"
+)
+
+
+# Strike de la Call comprada
+
+abline(
+  v = strike_prc_1,
+  col = "lightgray",
+  lty = 2
+)
+
+
+# Strike de la Call vendida
+
+abline(
+  v = strike_prc_2,
+  col = "lightgray",
+  lty = 2
+)
+
+
+# Punto de equilibrio
+
+abline(
+  v = breakeven,
+  col = "darkgreen",
+  lty = 3,
+  lwd = 2
+)
+
+legend(
+  "topright",
+  legend = c(
+    "Portafolio (Bull Call Spread)",
+    "Call (Long K1)",
+    "Call (Short K2)",
+    "Breakeven"
+  ),
+  lty = c(
+    1,
+    2,
+    2,
+    3
+  ),
+  lwd = c(
+    2,
+    2,
+    2,
+    2
+  ),
+  col = c(
+    "black",
+    "blue",
+    "red",
+    "darkgreen"
+  ),
+  box.lty = 0
+)
+
+```
+
+```{r}
+knitr::include_graphics("Bull Spread WTI .png")
+```
+
+
+
+
+
+

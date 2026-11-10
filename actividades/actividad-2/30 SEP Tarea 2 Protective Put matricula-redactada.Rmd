@@ -1,0 +1,255 @@
+---
+title: "30 SEP Tarea 2 Protective Put [MATRICULA REDACTADA]"
+output: html_document
+date: "2026-10-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+## Tarea 2. Protective Put [MATRICULA REDACTADA]
+
+## Detalles de las Posiciones
+
+```{r}
+shares <- 100
+entry_price <- 335.72
+strike_price <- 335.00
+put_price <- 4.05
+
+# Rango de precios de AAPL al vencimiento
+
+future_price_range <- seq(from = 0, to = 600, by = 1)
+```
+
+## Análisis de ganancia/pérdida
+
+```{r}
+# Ganancia o pérdida de las 100 acciones
+
+long_stock_profit <- 
+  (future_price_range - entry_price) * shares
+
+
+# Ganancia o pérdida de la Put comprada
+
+put_buyer_profit <- 
+  (pmax(strike_price - future_price_range, 0) - put_price) * shares
+
+
+# Ganancia o pérdida total del Protective Put
+
+protective_put <- 
+  long_stock_profit + put_buyer_profit
+```
+
+## Indicadores de la estrategia
+```{r}
+# Punto de equilibrio
+
+breakeven <- entry_price + put_price
+
+
+# Pérdida máxima
+
+max_loss <- 
+  (strike_price - entry_price - put_price) * shares
+
+
+breakeven
+max_loss
+```
+
+## Gráfica Protective Put
+
+```{r}
+# Configuración de la gráfica
+
+par(mar = c(5.1, 4.1, 4.1, 8.1))
+
+y_min <- min(c(
+  protective_put,
+  long_stock_profit,
+  put_buyer_profit
+))
+
+y_max <- max(c(
+  protective_put,
+  long_stock_profit,
+  put_buyer_profit
+))
+
+y_pad <- 0.08 * (y_max - y_min)
+
+
+# Gráfica del Protective Put
+
+plot(
+  x = future_price_range,
+  y = protective_put,
+  type = "l",
+  lwd = 2,
+  main = paste0(
+    "Protective Put AAPL (S0 = ",
+    entry_price,
+    ", K = ",
+    strike_price,
+    ", Put = ",
+    put_price,
+    ")"
+  ),
+  xlab = "Precio de AAPL al vencimiento (ST)",
+  ylab = "Ganancia / Pérdida total (USD)",
+  ylim = c(
+    y_min - y_pad,
+    y_max + y_pad
+  )
+)
+
+# Línea de las acciones
+
+lines(
+  x = future_price_range,
+  y = long_stock_profit,
+  col = "blue",
+  lty = 2,
+  lwd = 2
+)
+
+
+# Línea de la Put
+
+lines(
+  x = future_price_range,
+  y = put_buyer_profit,
+  col = "red",
+  lty = 2,
+  lwd = 2
+)
+
+# Línea del strike
+
+abline(
+  v = strike_price,
+  col = "lightgray",
+  lty = 2
+)
+
+
+# Línea del punto de equilibrio
+
+abline(
+  v = breakeven,
+  col = "darkgreen",
+  lty = 3
+)
+
+
+# Línea de cero
+
+abline(
+  h = 0,
+  col = "lightgray",
+  lty = 2
+)
+
+
+# Línea de pérdida máxima
+
+abline(
+  h = max_loss,
+  col = "purple",
+  lty = 3
+)
+
+# Etiqueta del strike
+
+text(
+  x = strike_price,
+  y = y_max,
+  labels = paste0(
+    "K = ",
+    strike_price
+  ),
+  pos = 4,
+  col = "gray30",
+  cex = 0.9
+)
+
+
+# Etiqueta del break-even
+
+text(
+  x = breakeven,
+  y = y_max * 0.92,
+  labels = paste0(
+    "Break-even = ",
+    round(breakeven, 2)
+  ),
+  pos = 4,
+  col = "darkgreen",
+  cex = 0.9
+)
+
+
+# Etiqueta de pérdida máxima
+
+text(
+  x = min(future_price_range) + 20,
+  y = max_loss,
+  labels = paste0(
+    "Pérdida máx = ",
+    round(max_loss, 0),
+    " USD"
+  ),
+  pos = 4,
+  col = "purple",
+  cex = 0.9
+)
+
+legend(
+  "topright",
+  inset = c(-0.35, 0),
+  legend = c(
+    "Portafolio (Protective Put)",
+    "Acción (Long 100)",
+    "Put (Long 1 contrato)"
+  ),
+  lty = c(1, 2, 2),
+  lwd = c(2, 2, 2),
+  col = c(
+    "black",
+    "blue",
+    "red"
+  ),
+  title = "Componente",
+  box.lty = 0,
+  xpd = TRUE
+)
+```
+
+```{r}
+knitr::include_graphics("Protective Put.png")
+```
+
